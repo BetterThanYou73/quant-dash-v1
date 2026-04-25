@@ -2,7 +2,7 @@ import argparse
 import time
 from datetime import datetime
 
-import data_engine as de
+import core.data_engine as de
 
 
 def build_default_universe(sectors, max_sector_names):

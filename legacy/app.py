@@ -4,8 +4,8 @@ import plotly.graph_objects as go
 import pandas as pd
 import numpy as np
 
-import data_engine as de
-import metrics
+import core.data_engine as de
+import core.metrics as metrics
 
 
 DEFAULT_WATCHLIST = ["AAPL", "MSFT", "GOOGL", "AMZN", "META", "INTC", "AMD", "NVDA", "TSLA"]
