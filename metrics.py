@@ -61,3 +61,52 @@ def calculate_tail_metrics(price_series, alpha=0.05):
     "tail_ratio": tail_ratio,
     "jb_pvalue": jb_pvalue,
     }
+
+
+def calculate_hedge_ratio(price_a, price_b):
+    """Estimate beta in A = alpha + beta * B using least squares."""
+    paired = pd.concat([price_a, price_b], axis=1).dropna()
+    if paired.empty:
+        return float("nan")
+
+    x = paired.iloc[:, 1].to_numpy(dtype=float)
+    y = paired.iloc[:, 0].to_numpy(dtype=float)
+
+    x_var = np.var(x)
+    if x_var == 0:
+        return float("nan")
+
+    beta = np.cov(y, x, ddof=1)[0, 1] / x_var
+    return float(beta)
+
+
+def calculate_spread(price_a, price_b, hedge_ratio):
+    paired = pd.concat([price_a, price_b], axis=1).dropna()
+    if paired.empty or pd.isna(hedge_ratio):
+        return pd.Series(dtype=float)
+
+    spread = paired.iloc[:, 0] - hedge_ratio * paired.iloc[:, 1]
+    spread.name = "spread"
+    return spread
+
+
+def rolling_zscore(series, window=30):
+    if series.empty:
+        return pd.Series(dtype=float)
+
+    rolling_mean = series.rolling(window).mean()
+    rolling_std = series.rolling(window).std()
+    z = (series - rolling_mean) / rolling_std
+    return z.replace([np.inf, -np.inf], np.nan)
+
+
+def pair_signal(current_z, entry_threshold=2.0, exit_threshold=0.5):
+    if pd.isna(current_z):
+        return "No Signal"
+    if current_z >= entry_threshold:
+        return "Short A / Long B"
+    if current_z <= -entry_threshold:
+        return "Long A / Short B"
+    if abs(current_z) <= exit_threshold:
+        return "Exit / Mean Reverted"
+    return "Monitor"
