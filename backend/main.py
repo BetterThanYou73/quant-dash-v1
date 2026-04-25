@@ -19,6 +19,9 @@ from fastapi.middleware.cors import CORSMiddleware
 # This is the seam that lets us swap Streamlit out without rewriting the math.
 from core import data_engine as de
 
+# Route modules. Each one defines an APIRouter we mount below.
+from backend import routes_signals
+
 
 # --- App instance ---------------------------------------------------------
 # `title`, `version`, `description` show up in the auto-generated /docs page
@@ -47,6 +50,10 @@ app.add_middleware(
 
 
 # --- Routes ---------------------------------------------------------------
+
+# Mount the modular routers. Each call adds a group of endpoints to the app.
+app.include_router(routes_signals.router)
+
 
 @app.get("/api/health")
 def health():
