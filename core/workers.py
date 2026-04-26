@@ -116,6 +116,34 @@ def refresh_once(task: str, period: str, batch_size: int):
                 print(f"[{now}] merge failed ({exc}); falling back to overwrite")
                 # fall through to overwrite
 
+    # DAILY task: previously did a full overwrite, which blew away any
+    # user-added tickers (SOXL, TLO, XEQT, etc.) that the API merged in
+    # via /api/portfolio/refresh. The user_tickers.json file lives on
+    # the web dyno's ephemeral filesystem and isn't visible from the
+    # release/scheduler dyno that runs this code, so build_universe()
+    # never sees them. Solution: merge rather than overwrite — keep any
+    # columns from `existing` whose ticker is NOT in the universe we
+    # just refreshed (those are by definition user-added).
+    if task == "daily":
+        existing, _ = de.load_cached_market_data()
+        if existing is not None and not existing.empty and isinstance(existing.columns, pd.MultiIndex):
+            try:
+                fresh_tickers = set(universe)
+                user_mask = [tkr not in fresh_tickers for tkr in existing.columns.get_level_values(-1)]
+                if any(user_mask):
+                    user_cols = existing.loc[:, user_mask]
+                    merged = pd.concat([fresh, user_cols], axis=1)
+                    merged = merged.loc[:, ~merged.columns.duplicated(keep="first")]
+                    de.save_market_data_cache(merged)
+                    print(f"[{now}] cache refreshed (preserving user tickers): "
+                          f"rows={merged.shape[0]} cols={merged.shape[1]} "
+                          f"universe_requested={len(universe)} "
+                          f"user_tickers_kept={user_cols.columns.get_level_values(-1).nunique()}")
+                    _rebuild_snapshot_safe()
+                    return True
+            except Exception as exc:
+                print(f"[{now}] daily-preserve-user-tickers failed ({exc}); falling back to overwrite")
+
     de.save_market_data_cache(fresh)
     print(f"[{now}] cache refreshed: rows={fresh.shape[0]} cols={fresh.shape[1]} "
           f"universe_requested={len(universe)}")

@@ -1744,6 +1744,17 @@ async function _renderPortfolio() {
   // Performance chart \u2014 fetched separately so a slow history call doesn't
   // block the rest of the page from rendering.
   _renderPortfolioPerf().catch(() => { /* errors shown inline */ });
+
+  // Auto-hydrate any positions that are missing prices (rows showing "\u2014").
+  // Only triggers once per render cycle; the refresh endpoint will retry
+  // foreign tickers via .TO/.V fallback. Re-renders when done.
+  const missing = (analytics?.diagnostics?.missing_prices) || [];
+  if (missing.length && !window._PF_AUTO_HYDRATED) {
+    window._PF_AUTO_HYDRATED = true;
+    apiPost("/api/portfolio/refresh", {})
+      .then(() => _renderPortfolio())
+      .catch(() => { /* leave em-dashes; user can click Refresh */ });
+  }
 }
 
 // Active period for the equity curve. Persisted in-module so re-renders
