@@ -17,6 +17,25 @@
   --glow2: 0 0 20px rgba(0,207,255,0.15);
 }
 * { box-sizing: border-box; margin: 0; padding: 0; }
+
+/* ------ Themed scrollbars (site-wide) ------
+   WebKit (Chrome/Edge/Safari) needs ::-webkit-scrollbar pseudo-elements.
+   Firefox uses scrollbar-width / scrollbar-color. We set both.
+   Applied to *all* scrollables so the chunky default OS bar never appears. */
+* {
+  scrollbar-width: thin;
+  scrollbar-color: rgba(0,255,170,0.25) transparent;
+}
+::-webkit-scrollbar              { width: 8px; height: 8px; }
+::-webkit-scrollbar-track        { background: transparent; }
+::-webkit-scrollbar-thumb        {
+  background: rgba(0,255,170,0.18);
+  border-radius: 4px;
+  /* Subtle inset border so the thumb has a hairline edge against dark bg */
+  border: 1px solid rgba(0,255,170,0.08);
+}
+::-webkit-scrollbar-thumb:hover  { background: rgba(0,255,170,0.35); }
+::-webkit-scrollbar-corner       { background: transparent; }
 body {
   background: var(--bg);
   color: var(--text);
@@ -358,21 +377,6 @@ nav {
      Only takes effect when the bar is actually rendered (Firefox / Chromium 94+). */
   scrollbar-gutter: stable;
 }
-/* Dark, slim scrollbar that matches the theme. Without this the browser's
-   chunky default bar dominates the small heatmap card. */
-.heatmap-wrap::-webkit-scrollbar { height: 6px; }
-.heatmap-wrap::-webkit-scrollbar-track {
-  background: transparent;
-}
-.heatmap-wrap::-webkit-scrollbar-thumb {
-  background: rgba(0, 255, 170, 0.18);
-  border-radius: 3px;
-}
-.heatmap-wrap::-webkit-scrollbar-thumb:hover {
-  background: rgba(0, 255, 170, 0.35);
-}
-/* Firefox equivalent */
-.heatmap-wrap { scrollbar-width: thin; scrollbar-color: rgba(0,255,170,0.25) transparent; }
 
 .heatmap-grid {
   display: grid;
@@ -512,21 +516,6 @@ nav {
 
 /* NEWS card */
 .news-body { padding: 4px 0 6px; max-height: 260px; overflow-y: auto; scrollbar-gutter: stable; }
-/* Themed slim scrollbars — applied to any scroll container that opts in
-   via these class names. Keeps the chunky default OS bar from overwhelming
-   the small dark cards. */
-.news-body::-webkit-scrollbar,
-.modal-body::-webkit-scrollbar { width: 6px; height: 6px; }
-.news-body::-webkit-scrollbar-track,
-.modal-body::-webkit-scrollbar-track { background: transparent; }
-.news-body::-webkit-scrollbar-thumb,
-.modal-body::-webkit-scrollbar-thumb {
-  background: rgba(0,255,170,0.18);
-  border-radius: 3px;
-}
-.news-body::-webkit-scrollbar-thumb:hover,
-.modal-body::-webkit-scrollbar-thumb:hover { background: rgba(0,255,170,0.35); }
-.news-body, .modal-body { scrollbar-width: thin; scrollbar-color: rgba(0,255,170,0.25) transparent; }
 .news-item {
   padding: 9px 16px;
   border-bottom: 1px solid rgba(0,255,170,0.04);
@@ -594,19 +583,25 @@ nav {
   color: var(--text2);
 }
 
-/* Reusable table inside modals (Screener results, Portfolio holdings). */
-.modal-table { width: 100%; border-collapse: collapse; font-size: 11px; }
+/* Reusable table inside modals (Screener results, Portfolio holdings).
+   `border-collapse: separate` is required for sticky <th> to work in
+   most browsers — under `collapse` the cell borders win the layer fight
+   and rows render on top of the supposedly-sticky header. */
+.modal-table { width: 100%; border-collapse: separate; border-spacing: 0; font-size: 11px; }
 .modal-table th, .modal-table td {
   padding: 7px 8px; text-align: right;
-  border-bottom: 1px solid rgba(0,255,170,0.05);
+  /* Single bottom border via box-shadow so collapse=false doesn't double them. */
+  box-shadow: inset 0 -1px 0 rgba(0,255,170,0.05);
 }
 .modal-table th {
   text-transform: uppercase; letter-spacing: 0.5px;
   color: var(--text3); font-size: 9px; font-weight: 700;
-  background: var(--bg3); position: sticky; top: 0; z-index: 1;
+  background: var(--bg2);            /* opaque so rows scroll behind cleanly */
+  position: sticky; top: 0; z-index: 2;
+  box-shadow: inset 0 -1px 0 var(--border);
 }
 .modal-table th:first-child, .modal-table td:first-child { text-align: left; }
-.modal-table tbody tr:hover { background: rgba(0,255,170,0.04); }
+.modal-table tbody tr:hover td { background: rgba(0,255,170,0.04); }
 .modal-table .pos { color: var(--success); }
 .modal-table .neg { color: var(--danger); }
 
