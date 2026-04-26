@@ -836,39 +836,36 @@ async function loadSectors() {
       return;
     }
     if (meta) meta.textContent = `${data.sector_count} sectors`;
-    // Find max |avg_composite| to scale the divergent bar widths.
-    const maxAbs = Math.max(...data.results.map(r => Math.abs(r.avg_composite || 0)), 0.5);
-    const header = `
-      <div class="sector-row header">
-        <div>Sector</div>
-        <div>Avg Z</div>
-        <div>Med Mom</div>
-        <div>Buys</div>
-        <div>N</div>
-      </div>`;
-    const rows = data.results.map(r => {
+    // Compact GICS labels for the tile face. (Tiles are narrow.)
+    const SHORT = {
+      "Information Technology": "TECH",
+      "Communication Services": "COMMS",
+      "Consumer Discretionary": "DISC",
+      "Consumer Staples": "STAPL",
+      "Health Care": "HLTH",
+      "Financials": "FINS",
+      "Industrials": "INDU",
+      "Energy": "ENRG",
+      "Materials": "MATR",
+      "Real Estate": "REAL",
+      "Utilities": "UTIL",
+    };
+    body.innerHTML = data.results.map(r => {
       const z = r.avg_composite || 0;
-      const pct = Math.min(100, Math.abs(z) / maxAbs * 50);  // half-width centered
-      const cls = z >= 0 ? "pos" : "neg";
+      const cls = z > 0.05 ? "pos" : z < -0.05 ? "neg" : "flat";
       const buyCount = (r.strong_buy || 0) + (r.buy || 0);
-      const buyCls = buyCount > 0 ? "sector-buys" : "sector-buys empty";
+      const buyCls = buyCount > 0 ? "buys" : "buys empty";
+      const short = SHORT[r.Sector] || r.Sector.slice(0, 5).toUpperCase();
       return `
-        <div class="sector-row">
-          <div class="sec-name">${r.Sector}</div>
-          <div>
-            <div style="display:flex;align-items:center;gap:6px">
-              <span class="sector-bar-wrap" style="flex:1">
-                <span class="sector-bar ${cls}" style="width:${pct}%"></span>
-              </span>
-              <span style="color:${z >= 0 ? "var(--success)" : "var(--danger)"};min-width:38px;text-align:right">${z >= 0 ? "+" : ""}${z.toFixed(2)}</span>
-            </div>
+        <div class="sector-tile" title="${r.Sector} — ${r.constituent_count} tickers">
+          <div class="st-name">${short}</div>
+          <div class="st-z ${cls}">${z >= 0 ? "+" : ""}${z.toFixed(2)}</div>
+          <div class="st-meta">
+            <span>n=${r.constituent_count}</span>
+            <span class="${buyCls}">▲${buyCount}</span>
           </div>
-          <div>${fmtPct(r.median_momentum)}</div>
-          <div class="${buyCls}">${buyCount}</div>
-          <div style="color:var(--text3)">${r.constituent_count}</div>
         </div>`;
     }).join("");
-    body.innerHTML = header + rows;
   } catch (e) {
     body.innerHTML = `<div class="placeholder err">${e.message}</div>`;
   }
@@ -968,26 +965,18 @@ async function loadMacro() {
     const data = await apiGet("/api/macro");
     if (meta) meta.textContent = `${data.results.length} indicators`;
     const colorClass = (n) => n == null ? "flat" : n > 0 ? "up" : n < 0 ? "dn" : "flat";
-    const fmtChg = (n) => n == null ? "—" : (n >= 0 ? "+" : "") + n.toFixed(2) + "%";
-    const header = `
-      <div class="macro-row header">
-        <div>Indicator</div>
-        <div>Level</div>
-        <div>1d</div>
-        <div>5d</div>
-        <div>21d</div>
-        <div>1y</div>
-      </div>`;
-    const rows = data.results.map(r => `
-      <div class="macro-row" title="${r.description}">
-        <div class="macro-lbl">${r.label}</div>
-        <div class="macro-px">${r.price == null ? "—" : r.price.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</div>
-        <div class="macro-chg ${colorClass(r.change_1d_pct)}">${fmtChg(r.change_1d_pct)}</div>
-        <div class="macro-chg ${colorClass(r.change_5d_pct)}">${fmtChg(r.change_5d_pct)}</div>
-        <div class="macro-chg ${colorClass(r.change_21d_pct)}">${fmtChg(r.change_21d_pct)}</div>
-        <div class="macro-chg ${colorClass(r.change_252d_pct)}">${fmtChg(r.change_252d_pct)}</div>
+    const fmtChg = (n) => n == null ? "—" : (n >= 0 ? "+" : "") + n.toFixed(1) + "%";
+    const fmtPx = (n) => n == null ? "—" : n.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+    body.innerHTML = data.results.map(r => `
+      <div class="macro-tile" title="${r.description}">
+        <div class="mt-lbl">${r.label}</div>
+        <div class="mt-px">${fmtPx(r.price)}</div>
+        <div class="mt-chgs">
+          <span><span class="k">1d</span><span class="v ${colorClass(r.change_1d_pct)}">${fmtChg(r.change_1d_pct)}</span></span>
+          <span><span class="k">21d</span><span class="v ${colorClass(r.change_21d_pct)}">${fmtChg(r.change_21d_pct)}</span></span>
+          <span><span class="k">1y</span><span class="v ${colorClass(r.change_252d_pct)}">${fmtChg(r.change_252d_pct)}</span></span>
+        </div>
       </div>`).join("");
-    body.innerHTML = header + rows;
   } catch (e) {
     body.innerHTML = `<div class="placeholder err">${e.message}</div>`;
   }
@@ -1032,12 +1021,12 @@ async function loadNews() {
       </div>`;
     body.innerHTML = note + data.results.map(n => `
       <div class="news-item">
-        <a class="news-title" href="${n.link || "#"}" target="_blank" rel="noopener noreferrer">${n.title}</a>
-        <div class="news-meta">
-          <span class="news-publisher">${n.publisher || "—"}</span>
+        <div class="news-meta-top">
+          <span class="news-publisher">${(n.publisher || "—").toUpperCase()}</span>
           <span>·</span>
           <span>${_relativeTime(n.published_utc)}</span>
         </div>
+        <a class="news-title" href="${n.link || "#"}" target="_blank" rel="noopener noreferrer">${n.title}</a>
       </div>`).join("");
   } catch (e) {
     body.innerHTML = `<div class="placeholder err">${e.message}</div>`;
