@@ -46,6 +46,30 @@ app = FastAPI(
 )
 
 
+# --- Startup preload ------------------------------------------------------
+# On Heroku Basic the cache lives in Postgres as a ~5 MB BYTEA blob. The
+# very first request that hits get_market_data() pays ~5-8 s to SELECT and
+# unpickle, and any concurrent requests queue behind the same lock. With
+# the dashboard firing 8+ cards in parallel on page load, the slowest
+# request can blow past Heroku's 30 s H12 router timeout.
+#
+# Preloading at startup means the dyno is "ready to serve" *before* it
+# starts accepting traffic. Heroku waits for `app[web.1] state changed
+# from starting to up` before routing requests, so this naturally
+# absorbs the load latency into boot time instead of user wait time.
+@app.on_event("startup")
+def _preload_cache():
+    try:
+        df, ts = de.get_market_data()
+        rows = int(df.shape[0]) if df is not None and not df.empty else 0
+        cols = int(df.shape[1]) if df is not None and not df.empty else 0
+        print(f"[startup] cache preloaded: backend={de._cache_backend()} rows={rows} cols={cols} ts={ts}")
+    except Exception as exc:
+        # Don't crash the dyno if the cache isn't available yet — endpoints
+        # will surface a clear 503/422 message when called.
+        print(f"[startup] cache preload failed: {exc}")
+
+
 # --- CORS -----------------------------------------------------------------
 # Browsers block JavaScript on origin A from calling an API on origin B
 # unless the API explicitly opts in via CORS headers. Our frontend will be
