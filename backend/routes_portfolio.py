@@ -40,6 +40,7 @@ from pydantic import BaseModel, Field
 from core import data_engine as de
 from core import portfolio_db as pdb
 from core import signals as sig
+from backend.routes_auth import get_current_user_id
 
 
 router = APIRouter(prefix="/api/portfolio", tags=["portfolio"])
@@ -53,6 +54,20 @@ _COOKIE_MAX_AGE = 60 * 60 * 24 * 365  # 1 year
 
 _TICKER_RE = re.compile(r"^[A-Z][A-Z0-9.\-]{0,9}$")
 _MAX_POSITIONS = 100
+
+
+def _resolve_owner(request: Request, response: Response) -> tuple[str, str]:
+    """Return (owner_kind, owner_id) for the calling user.
+
+    If a valid `qd_session` JWT is present, returns ('user', '<id>').
+    Otherwise mints/reads the `qd_device` cookie and returns
+    ('device', '<uuid>'). This keeps anonymous browsing fully
+    functional while letting signed-in users persist across devices.
+    """
+    uid = get_current_user_id(request)
+    if uid is not None:
+        return ("user", str(uid))
+    return ("device", _resolve_device_id(request, response))
 
 
 def _resolve_device_id(request: Request, response: Response) -> str:
@@ -103,12 +118,12 @@ class BulkPositions(BaseModel):
 
 @router.get("")
 def list_positions(request: Request, response: Response) -> dict[str, Any]:
-    """List all positions for the calling device."""
-    did = _resolve_device_id(request, response)
-    items = pdb.list_positions("device", did)
+    """List all positions for the calling user (or device, if anonymous)."""
+    kind, oid = _resolve_owner(request, response)
+    items = pdb.list_positions(kind, oid)
     return {
-        "owner_kind": "device",
-        "device_id_hint": did[:8],   # first 8 chars only, for debug \u2014 don't echo full id
+        "owner_kind": kind,
+        "device_id_hint": oid[:8],   # first 8 chars only, for debug \u2014 don't echo full id
         "count": len(items),
         "positions": items,
     }
@@ -118,31 +133,31 @@ def list_positions(request: Request, response: Response) -> dict[str, Any]:
 def add_position(body: PositionIn, request: Request, response: Response) -> dict[str, Any]:
     """Add a single position. If the ticker already exists in the
     portfolio, blends the cost basis (weighted average)."""
-    did = _resolve_device_id(request, response)
+    kind, oid = _resolve_owner(request, response)
     sym = _validate_ticker(body.ticker)
 
-    # Cap total positions per device to stop runaway abuse.
-    existing = pdb.list_positions("device", did)
+    # Cap total positions per portfolio to stop runaway abuse.
+    existing = pdb.list_positions(kind, oid)
     if len(existing) >= _MAX_POSITIONS and not any(p["ticker"] == sym for p in existing):
         raise HTTPException(status_code=409, detail=f"max {_MAX_POSITIONS} positions per portfolio")
 
     try:
-        result = pdb.upsert_position("device", did, sym, body.shares, body.avg_cost)
+        result = pdb.upsert_position(kind, oid, sym, body.shares, body.avg_cost)
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
-    _bump_analytics_cache(did)
+    _bump_analytics_cache(f"{kind}:{oid}")
     return {"ok": True, "position": result}
 
 
 @router.delete("/{ticker}")
 def delete_position(ticker: str, request: Request, response: Response) -> dict[str, Any]:
     """Remove a single position by ticker."""
-    did = _resolve_device_id(request, response)
+    kind, oid = _resolve_owner(request, response)
     sym = _validate_ticker(ticker)
-    deleted = pdb.delete_position("device", did, sym)
+    deleted = pdb.delete_position(kind, oid, sym)
     if not deleted:
         raise HTTPException(status_code=404, detail=f"{sym} not in portfolio")
-    _bump_analytics_cache(did)
+    _bump_analytics_cache(f"{kind}:{oid}")
     return {"ok": True, "deleted": sym}
 
 
@@ -151,15 +166,15 @@ def replace_all(body: BulkPositions, request: Request, response: Response) -> di
     """Atomically replace the entire portfolio.
 
     Used for one-shot localStorage \u2192 Postgres migration on first load,
-    and for "Save All" in the portfolio modal.
+    and for "Save All" in the portfolio page.
     """
-    did = _resolve_device_id(request, response)
+    kind, oid = _resolve_owner(request, response)
     items = [p.model_dump() for p in body.items]
     # Validate all tickers up front so we don't write a partial bad batch.
     for p in items:
         _validate_ticker(p["ticker"])
-    n = pdb.replace_all_positions("device", did, items)
-    _bump_analytics_cache(did)
+    n = pdb.replace_all_positions(kind, oid, items)
+    _bump_analytics_cache(f"{kind}:{oid}")
     return {"ok": True, "written": n}
 
 
@@ -200,9 +215,14 @@ def _positions_key(positions: list[dict]) -> str:
     return "|".join(parts)
 
 
-def _bump_analytics_cache(device_id: str) -> None:
+def _bump_analytics_cache(prefix: str) -> None:
+    """Invalidate cached analytics for an owner.
+
+    `prefix` should be either the legacy device_id (back-compat) or
+    the new \"kind:oid\" form. We match on startswith() so both work.
+    """
     with _analytics_lock:
-        for k in [k for k in _analytics_cache if k.startswith(device_id + ":")]:
+        for k in [k for k in _analytics_cache if k.startswith(prefix + ":") or k.startswith(prefix)]:
             _analytics_cache.pop(k, None)
 
 
@@ -388,10 +408,9 @@ def analytics(request: Request, response: Response) -> dict[str, Any]:
     """Server-computed portfolio analytics: totals, weights, P&L,
     weighted beta vs SPY, weighted composite-z, sector exposure, and
     per-position factor scores."""
-    did = _resolve_device_id(request, response)
-    positions = pdb.list_positions("device", did)
-
-    cache_key = f"{did}:{_positions_key(positions)}"
+    kind, oid = _resolve_owner(request, response)
+    positions = pdb.list_positions(kind, oid)
+    cache_key = f"{kind}:{oid}:{_positions_key(positions)}"
     now = time.time()
     with _analytics_lock:
         hit = _analytics_cache.get(cache_key)

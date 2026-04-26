@@ -1404,22 +1404,14 @@ const Portfolio = {
 };
 
 async function openPortfolio() {
-  Modal.open("Portfolio", `
-    <div class="modal-controls">
-      <label>Ticker <input id="pf-ticker" class="field" maxlength="6" placeholder="AAPL"></label>
-      <label>Shares <input id="pf-shares" class="field" type="number" step="0.01" min="0" placeholder="10"></label>
-      <label>Avg Cost <input id="pf-cost" class="field" type="number" step="0.01" min="0" placeholder="175.20"></label>
-      <button id="pf-add" class="pill cta" style="padding:5px 14px">Add Position</button>
-    </div>
-    <div id="pf-summary" class="pf-summary"></div>
-    <div id="pf-table"></div>
-    <div class="pf-disclaimer">
-      Positions are stored on the server, scoped to this browser via a device-id cookie.
-      Prices come from the cached market data and may be up to a day stale.
-      Phase 2b will move device-scoped portfolios to user accounts on sign-in.
-    </div>
-  `);
-  document.getElementById("pf-add").addEventListener("click", _addPortfolioPosition);
+  // Page-based now (was a modal). Render into the static markup in
+  // index.html. The Router handles showing/hiding the page itself; this
+  // function only attaches the "Add" handler and renders content.
+  const addBtn = document.getElementById("pf-add");
+  if (addBtn && !addBtn._wired) {
+    addBtn.addEventListener("click", _addPortfolioPosition);
+    addBtn._wired = true;  // bindNav can call us repeatedly without dup-binding
+  }
   await _renderPortfolio();
 }
 
@@ -1444,6 +1436,7 @@ async function _addPortfolioPosition() {
 async function _renderPortfolio() {
   const tableEl = document.getElementById("pf-table");
   const sumEl = document.getElementById("pf-summary");
+  const metaEl = document.getElementById("pf-meta");
   tableEl.innerHTML = `<div class="placeholder">Loading portfolio analytics…</div>`;
   sumEl.innerHTML = "";
 
@@ -1457,6 +1450,10 @@ async function _renderPortfolio() {
   }
 
   const positions = analytics.positions || [];
+  if (metaEl) {
+    const ts = analytics.as_of_utc ? analytics.as_of_utc.replace("T", " ").slice(0, 16) + " UTC" : "no data";
+    metaEl.textContent = `${positions.length} position${positions.length === 1 ? "" : "s"} · prices as of ${ts}`;
+  }
   if (!positions.length) {
     tableEl.innerHTML = `<div class="placeholder">No positions yet. Add one above.</div>`;
     return;
@@ -1550,17 +1547,103 @@ async function _renderPortfolio() {
   });
 }
 
+// ----- Router (hash-based SPA routing) -----
+//
+// We use the URL hash so the back/forward buttons work and users can
+// bookmark/share /#/portfolio. There are only a few routes today
+// (dashboard, portfolio); screener is a modal because it's a one-shot
+// table view, and docs is FastAPI's auto Swagger on /docs (new tab).
+//
+// Each <main class="page" data-route="..."> in index.html registers as
+// a route. Showing a page hides the others and runs the slide-in
+// animation by re-applying the .page-in class.
+
+const Router = (() => {
+  const routes = new Map();        // "/portfolio" -> { el, onEnter }
+  const navLinks = {};             // routeKey -> nav button (for active highlighting)
+
+  function register(key, options = {}) {
+    const el = document.querySelector(`main.page[data-route="${key}"]`);
+    if (!el) return;
+    routes.set(key, { el, onEnter: options.onEnter || null });
+  }
+
+  function _showPage(key) {
+    let target = routes.get(key);
+    if (!target) target = routes.get("/");  // default
+    for (const [k, r] of routes.entries()) {
+      r.el.hidden = (r !== target);
+      r.el.classList.remove("page-in");
+    }
+    if (target) {
+      // Force reflow so the animation re-runs even if the same class
+      // is re-added before the next paint.
+      target.el.offsetHeight;
+      target.el.classList.add("page-in");
+      try { target.onEnter && target.onEnter(); }
+      catch (e) { console.error("[router] onEnter failed:", e); }
+    }
+    // Active nav button.
+    for (const [k, btn] of Object.entries(navLinks)) {
+      btn.classList.toggle("active", k === (target && target.el.dataset.route));
+    }
+    // Scroll to top so each page feels fresh.
+    window.scrollTo({ top: 0, behavior: "instant" in window ? "instant" : "auto" });
+  }
+
+  function _parseHash() {
+    const h = (location.hash || "").replace(/^#/, "");
+    if (!h || h === "/") return "/";
+    return h.startsWith("/") ? h : "/" + h;
+  }
+
+  function goto(key) {
+    const target = key.startsWith("/") ? key : "/" + key;
+    if (_parseHash() === target) {
+      _showPage(target);  // re-trigger animation if user clicks same nav twice
+    } else {
+      location.hash = "#" + target;
+    }
+  }
+
+  function bindNavLink(routeKey, buttonId) {
+    const btn = document.getElementById(buttonId);
+    if (!btn) return;
+    navLinks[routeKey] = btn;
+    btn.addEventListener("click", (e) => { e.preventDefault(); goto(routeKey); });
+  }
+
+  function start() {
+    window.addEventListener("hashchange", () => _showPage(_parseHash()));
+    _showPage(_parseHash());
+  }
+
+  return { register, bindNavLink, goto, start };
+})();
+
 // ----- Bind nav -----
 function bindNav() {
   Modal.bind();
-  document.getElementById("nav-screener")?.addEventListener("click", openScreener);
-  document.getElementById("nav-portfolio")?.addEventListener("click", openPortfolio);
+
+  // Routes.
+  Router.register("/", {});
+  Router.register("/portfolio", { onEnter: () => openPortfolio() });
+  Router.bindNavLink("/", "nav-dashboard");
+  Router.bindNavLink("/portfolio", "nav-portfolio");
+
+  // Modal-based features stay buttons.
+  document.getElementById("nav-screener")?.addEventListener("click", () => {
+    // Don't change the route \u2014 screener is overlaid on whatever page
+    // the user was looking at, and closing it returns them there.
+    openScreener();
+  });
   document.getElementById("nav-docs")?.addEventListener("click", () => {
     // FastAPI auto-mounts Swagger UI at /docs. Open in a new tab so the
     // dashboard stays where the user left it.
     window.open(`${API}/docs`, "_blank", "noopener,noreferrer");
   });
-  document.getElementById("nav-dashboard")?.addEventListener("click", Modal.close);
+
+  Router.start();
 }
 
 // =========================================================================

@@ -10,4 +10,7 @@ lxml
 # Heroku deployment extras
 gunicorn
 psycopg[binary]
+# Auth (Phase 2b)
+bcrypt
+PyJWT
 

@@ -36,6 +36,7 @@ from backend import routes_macro
 from backend import routes_news
 from backend import routes_screener
 from backend import routes_portfolio
+from backend import routes_auth
 
 
 # --- App instance ---------------------------------------------------------
@@ -130,6 +131,7 @@ app.include_router(routes_regime.router)
 app.include_router(routes_macro.router)
 app.include_router(routes_news.router)
 app.include_router(routes_screener.router)
+app.include_router(routes_auth.router)
 app.include_router(routes_portfolio.router)
 
 
