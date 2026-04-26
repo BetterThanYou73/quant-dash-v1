@@ -1,0 +1,206 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>QuantDash — Quantitative Dashboard</title>
+<link href="https://fonts.googleapis.com/css2?family=Space+Mono:ital,wght@0,400;0,700;1,400&family=Syne:wght@400;600;700;800&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="styles.css">
+</head>
+<body>
+
+<!-- TOP NAV -->
+<nav>
+  <div class="logo">Quant<span>Dash</span></div>
+  <div class="ticker-bar" id="ticker-bar">
+    <!-- Populated by app.js. Static fallback below in case JS fails. -->
+    <div class="tick"><span class="tick-sym">SPY</span><span class="tick-val skeleton" style="width:50px"></span></div>
+    <div class="tick"><span class="tick-sym">QQQ</span><span class="tick-val skeleton" style="width:50px"></span></div>
+    <div class="tick"><span class="tick-sym">NVDA</span><span class="tick-val skeleton" style="width:50px"></span></div>
+    <div class="tick"><span class="tick-sym">AAPL</span><span class="tick-val skeleton" style="width:50px"></span></div>
+    <div class="tick"><span class="tick-sym">TSLA</span><span class="tick-val skeleton" style="width:50px"></span></div>
+  </div>
+  <div class="nav-right">
+    <div class="status-dot dead" id="status-dot" title="Connecting to API..."></div>
+    <button class="pill active">Dashboard</button>
+    <button class="pill">Screener</button>
+    <button class="pill">Portfolio</button>
+    <button class="pill">API Docs</button>
+  </div>
+</nav>
+
+<div class="app">
+
+  <!-- STAT STRIP -->
+  <div class="stat-strip" id="stat-strip">
+    <div class="stat-card">
+      <div class="stat-label">Top Composite</div>
+      <div class="stat-val" id="stat-top"><span class="skeleton" style="width:80px;height:18px"></span></div>
+      <div class="stat-sub neu" id="stat-top-sub">Loading…</div>
+    </div>
+    <div class="stat-card">
+      <div class="stat-label">Best Alpha vs SPY</div>
+      <div class="stat-val" id="stat-vol"><span class="skeleton" style="width:80px;height:18px"></span></div>
+      <div class="stat-sub neu" id="stat-vol-sub">Loading…</div>
+    </div>
+    <div class="stat-card">
+      <div class="stat-label">Worst Drawdown 252d</div>
+      <div class="stat-val" id="stat-cvar"><span class="skeleton" style="width:80px;height:18px"></span></div>
+      <div class="stat-sub neu" id="stat-cvar-sub">Loading…</div>
+    </div>
+    <div class="stat-card">
+      <div class="stat-label">Universe Size</div>
+      <div class="stat-val" id="stat-universe"><span class="skeleton" style="width:40px;height:18px"></span></div>
+      <div class="stat-sub neu" id="stat-universe-sub">Loading…</div>
+    </div>
+    <div class="stat-card">
+      <div class="stat-label">Buy + Strong Buy</div>
+      <div class="stat-val" id="stat-long"><span class="skeleton" style="width:30px;height:18px"></span></div>
+      <div class="stat-sub neu">Within watchlist</div>
+    </div>
+    <div class="stat-card">
+      <div class="stat-label">Cache Last Updated</div>
+      <div class="stat-val" id="stat-cache" style="font-size:14px"><span class="skeleton" style="width:120px;height:14px"></span></div>
+      <div class="stat-sub neu">Worker writes this</div>
+    </div>
+  </div>
+
+  <!-- ROADMAP STRIP — honest, no fake CTAs -->
+  <div class="phase2-banner">
+    <div class="phase2-icon">🛣️</div>
+    <div class="phase2-content">
+      <div class="phase2-title">Roadmap</div>
+      <div class="phase2-desc">
+        v1 ships open quant analytics: signals, pairs, risk, macro, news, portfolio (browser-local).
+        Phase 2 will add an optional bring-your-own-key LLM advisor (Claude / GPT / Gemini) that reads this dashboard's data via the public API.
+      </div>
+      <div class="phase2-tags">
+        <span class="phase2-tag">Open API</span>
+        <span class="phase2-tag">BYO Key</span>
+        <span class="phase2-tag">No Login Required</span>
+        <span class="phase2-tag">Phase 2</span>
+      </div>
+    </div>
+  </div>
+
+  <!-- MAIN GRID -->
+  <!-- Layout: signals table dominates left; watchlist sits in a fixed-width right rail. -->
+  <div class="main-grid">
+    <div class="left-col">
+
+      <!-- SIGNALS TABLE — the heart of the app, wired in step 5 -->
+      <div class="chart-card">
+        <div class="card-header">
+          <div class="card-title">Trade Signals</div>
+          <span class="card-badge badge-green">MFC v1</span>
+          <span class="card-badge badge-blue" id="signals-meta">LIVE</span>
+        </div>
+        <div id="signals-body">
+          <div class="placeholder">Loading signals…</div>
+        </div>
+        <div class="placeholder" style="font-size:10px;color:var(--text-dim);text-align:left;padding:10px 14px;line-height:1.5">
+          <strong>Model:</strong> Multi-Factor Composite — equal-weighted z-scores of momentum 12-1,
+          Sortino, alpha vs SPY (126d), and 5% CVaR (252d), ranked across the cached S&amp;P 500 universe.
+          Composite shown as percentile bar + raw z-score (+1 = one stdev above universe mean).
+          <br>
+          <strong>Disclosure:</strong> Factor investing has historical evidence at the portfolio level
+          over multi-year horizons. Single-stock signals are noisy.
+          This is research analysis, not investment advice. Past performance does not predict future returns.
+        </div>
+      </div>
+
+      <!-- PRICE CHART — wired in step 6 (Chart.js) -->
+      <div class="chart-card">
+        <div class="card-header">
+          <div class="card-title">Price Chart</div>
+          <span class="card-badge badge-warn">STEP 6</span>
+        </div>
+        <div class="placeholder">Real chart lands in step 6.</div>
+      </div>
+
+    </div>
+
+    <div class="right-col">
+
+      <!-- WATCHLIST — Step 5b (localStorage, no backend) -->
+      <div class="chart-card">
+        <div class="card-header">
+          <div class="card-title">Watchlist</div>
+          <span class="card-badge badge-warn">STEP 5b</span>
+        </div>
+        <div class="placeholder">Add / remove / disable tickers (browser-local).</div>
+      </div>
+
+      <!-- MARKET REGIME & VOL FORECAST — real ML, Step 6+ -->
+      <div class="chart-card">
+        <div class="card-header">
+          <div class="card-title">Regime &amp; Volatility</div>
+          <span class="card-badge badge-warn">STEP 7</span>
+        </div>
+        <div class="placeholder">Trend regime + GARCH vol forecast + anomaly flag.</div>
+      </div>
+
+    </div>
+  </div>
+
+  <!-- BOTTOM ROW — three analytical panels -->
+  <div class="bottom-row">
+
+    <!-- SECTOR BREAKDOWN — Step 8 -->
+    <div class="chart-card">
+      <div class="card-header">
+        <div class="card-title">Sector Breakdown</div>
+        <span class="card-badge badge-warn">STEP 8</span>
+      </div>
+      <div class="placeholder">Per-sector aggregated signals.</div>
+    </div>
+
+    <!-- MACRO FACTORS — Step 7 (FRED + yfinance) -->
+    <div class="chart-card">
+      <div class="card-header">
+        <div class="card-title">Macro Factors</div>
+        <span class="card-badge badge-warn">STEP 7</span>
+      </div>
+      <div class="placeholder">Fed rate · CPI · GDP · VIX · oil · gold · USD.</div>
+    </div>
+
+    <!-- RISK / CORRELATION — Step 6 -->
+    <div class="chart-card">
+      <div class="card-header">
+        <div class="card-title">Risk &amp; Correlation</div>
+        <span class="card-badge badge-warn">STEP 6</span>
+      </div>
+      <div class="placeholder">Correlation heatmap + portfolio risk metrics.</div>
+    </div>
+
+  </div>
+
+  <!-- SECONDARY ROW — pairs + news -->
+  <div class="bottom-row">
+
+    <!-- PAIRS TRADING — Step 6 -->
+    <div class="chart-card" style="grid-column: span 2;">
+      <div class="card-header">
+        <div class="card-title">Pairs Trading</div>
+        <span class="card-badge badge-warn">STEP 6</span>
+      </div>
+      <div class="placeholder">Spread + rolling z-score + entry/exit signal.</div>
+    </div>
+
+    <!-- NEWS — Step 9 (free tier news API) -->
+    <div class="chart-card">
+      <div class="card-header">
+        <div class="card-title">News</div>
+        <span class="card-badge badge-warn">STEP 9</span>
+      </div>
+      <div class="placeholder">Headlines + (later) FinBERT sentiment.</div>
+    </div>
+
+  </div>
+</div>
+
+<!-- Order matters: config first, then app uses window.QD_CONFIG -->
+<script src="config.js"></script>
+<script src="app.js"></script>
+</body>
+</html>
