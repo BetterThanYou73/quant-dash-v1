@@ -102,6 +102,57 @@ def _validate_ticker(t: str) -> str:
     return sym
 
 
+def _ensure_ticker_cached(sym: str) -> None:
+    """Fetch `sym` into the price cache if it isn't already there.
+
+    Called when a user adds a position whose ticker isn't in the S&P 500
+    base universe (e.g. ETFs like XEQT, foreign listings like TLO.TO,
+    leveraged like SOXL). Synchronous yfinance call, ~1-2s for one
+    ticker. Failures are swallowed: the position row is already saved,
+    analytics will just show '\u2014' until the next worker refresh.
+    """
+    try:
+        existing, _ = de.load_cached_market_data()
+        if not existing.empty:
+            cols = existing.columns
+            if hasattr(cols, "get_level_values"):
+                # MultiIndex columns: (field, ticker)
+                try:
+                    have = set(cols.get_level_values(-1).unique())
+                except Exception:
+                    have = set()
+            else:
+                have = set(cols)
+            if sym in have:
+                # Already cached \u2014 just make sure the worker keeps it.
+                try:
+                    de.add_user_tickers([sym])
+                except Exception:
+                    pass
+                return
+
+        added, _failed = de.merge_tickers_into_cache([sym], period="2y")
+        if added:
+            try:
+                de.add_user_tickers(added)
+            except Exception:
+                pass
+            # Best-effort name + sector lookup so the holdings table
+            # doesn't show "Unknown / \u2014" for ETFs and foreign listings.
+            try:
+                import yfinance as yf  # local import; already a dep
+
+                info = yf.Ticker(sym).info or {}
+                name = info.get("longName") or info.get("shortName") or sym
+                sector = info.get("sector") or info.get("category") or "ETF"
+                de.upsert_user_meta(sym, name=name, sector=sector)
+            except Exception:
+                pass
+    except Exception:
+        # Never let a cache hydration failure break the add-position flow.
+        pass
+
+
 # ---- request bodies ------------------------------------------------------
 
 class PositionIn(BaseModel):
@@ -132,7 +183,15 @@ def list_positions(request: Request, response: Response) -> dict[str, Any]:
 @router.post("")
 def add_position(body: PositionIn, request: Request, response: Response) -> dict[str, Any]:
     """Add a single position. If the ticker already exists in the
-    portfolio, blends the cost basis (weighted average)."""
+    portfolio, blends the cost basis (weighted average).
+
+    If the ticker isn't already in the price cache (i.e. it's outside
+    the S&P 500 universe — ETFs like XEQT, leveraged like SOXL, foreign
+    listings like TLO.TO), we synchronously hydrate it from yfinance so
+    the analytics call that runs right after this returns real numbers
+    instead of em-dashes. The fetch is ~1-2s for a single ticker, which
+    is acceptable add-position latency.
+    """
     kind, oid = _resolve_owner(request, response)
     sym = _validate_ticker(body.ticker)
 
@@ -145,6 +204,13 @@ def add_position(body: PositionIn, request: Request, response: Response) -> dict
         result = pdb.upsert_position(kind, oid, sym, body.shares, body.avg_cost)
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
+
+    # Auto-hydrate the cache for tickers outside the S&P 500. Best-effort:
+    # if yfinance is down or the ticker is bogus, the position is still
+    # saved — analytics will just show '—' for price until the next
+    # worker run picks it up.
+    _ensure_ticker_cached(sym)
+
     _bump_analytics_cache(f"{kind}:{oid}")
     return {"ok": True, "position": result}
 
@@ -174,6 +240,13 @@ def replace_all(body: BulkPositions, request: Request, response: Response) -> di
     for p in items:
         _validate_ticker(p["ticker"])
     n = pdb.replace_all_positions(kind, oid, items)
+
+    # Hydrate any tickers outside the S&P 500 cache in one batched fetch
+    # so the analytics call right after this returns real prices for
+    # ETFs / foreign listings instead of em-dashes.
+    for sym in {p["ticker"].strip().upper() for p in items}:
+        _ensure_ticker_cached(sym)
+
     _bump_analytics_cache(f"{kind}:{oid}")
     return {"ok": True, "written": n}
 
