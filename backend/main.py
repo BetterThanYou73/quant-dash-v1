@@ -113,18 +113,22 @@ def cache_status():
     Useful for the frontend to display a "Last updated: …" badge.
     """
     cache_path: Path = de.CACHE_DATA_PATH
-    exists = cache_path.exists()
 
-    if not exists:
+    # The cache may live in Postgres (Heroku) or on local disk. Probe the
+    # active backend by calling load_cached_market_data() rather than
+    # stat-ing the file path \u2014 on Heroku the file path will never exist.
+    data, cache_ts = de.load_cached_market_data()
+
+    if data.empty and not cache_path.exists():
         return {
             "cache_exists": False,
-            "message": "No cache yet. Run the worker: python -m core.workers",
+            "backend": de._cache_backend(),
+            "message": "No cache yet. Run the worker: python -m core.workers --once --task=daily",
         }
 
-    # Load lazily — only when the endpoint is actually called.
-    data, cache_ts = de.load_cached_market_data()
     return {
         "cache_exists": True,
+        "backend": de._cache_backend(),
         "last_updated_utc": cache_ts,
         "rows": int(data.shape[0]) if not data.empty else 0,
         "columns": int(data.shape[1]) if not data.empty else 0,
