@@ -66,11 +66,12 @@ heroku stack:set heroku-22 --app quantdash
 
 ### 3. Add Postgres + Scheduler
 ```powershell
-heroku addons:create heroku-postgresql:mini --app quantdash
+heroku addons:create heroku-postgresql:essential-0 --app quantdash
 heroku addons:create scheduler:standard --app quantdash
 ```
-`mini` is $5/mo (covered by Student Pack credits), 10K rows / 1 GB —
-ample for a single BYTEA blob.
+`essential-0` is $5/mo (covered by Student Pack credits), 1 GB / 20
+connections — ample for a single BYTEA blob. (The old `mini` plan name
+was retired by Heroku; `essential-0` is the current equivalent.)
 
 ### 4. Push the code
 ```powershell

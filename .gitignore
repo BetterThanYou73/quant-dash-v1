@@ -53,3 +53,5 @@ Thumbs.db
 *.feather
 *.pkl
 cache/
+
+HOSTING.md

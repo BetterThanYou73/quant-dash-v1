@@ -1,44 +1,75 @@
 # Quant Dash
 
-A personal Python quantitative dashboard for exploring stock metrics, pair trades, and risk diagnostics on a custom universe of tickers.
+A quantitative dashboard for exploring stock metrics, pair trades, signals,
+risk, sector regimes, macro factors, and news on a custom universe of
+tickers.
 
-> **Status:** v1 (Streamlit) is functional. A v2 revamp is in progress that replaces the Streamlit UI with a FastAPI backend and a static web frontend. See [Roadmap](#roadmap).
+> **Status:** v2 is live. The Streamlit UI from v1 has been replaced
+> with a FastAPI backend serving JSON to a static HTML/CSS/JS frontend.
+> The legacy Streamlit app still runs from `legacy/` for reference. See [Roadmap](#roadmap).
 
-## Features (v1)
-- **Market Overview** — ranked signals across the selected universe with a composite profitability score
-- **Pairs Trading** — hedge ratio, spread, rolling z-score, and prescriptive entry/exit signals
-- **Risk** — horizon-aware correlation heatmap and rolling pair correlation
-- Sector-aware filtering driven by `SP500.csv`
-- Cache-first data flow: the UI reads a local pickle cache instead of hitting Yahoo on every interaction
-- Optional background worker that refreshes the cache on an interval
+## Features
+- **Market Overview** — ranked composite-Z signals (momentum / volatility / skew / tail / drawdown / hit-rate) across the full S&P 500
+- **Sector heatmap** — 24 GICS sector groupings with composite-Z averages
+- **Regime + Volatility** card — trend / vol / breadth indicators with a regime label
+- **Macro Factors** card — SPY/QQQ/VIX/DXY/TLT/GLD/USO/HYG/LQD with daily Δ
+- **News** card — keyword-filtered Yahoo headlines per active ticker
+- **Pairs Trading** — hedge ratio, spread, rolling z-score, prescriptive entry/exit signals
+- **Correlation heatmap** — horizon-aware, themed scrollbars
+- **Screener** modal — filter the universe by composite-Z / signal / sector
+- **Portfolio** modal — weighted-avg cost basis, batch quote valuation (Phase 1 storage = `localStorage`; Phase 2 = Postgres)
+- **Refresh Scheduler** in the frontend — single-flight heartbeat, page-visibility-aware, exponential backoff
+- **Cache-first data flow** — the API never hits Yahoo at request time; the worker writes a pickle (Postgres BYTEA on Heroku, file locally)
 
 ## Project Structure
 ```
-app.py            Streamlit app entrypoint (v1 UI)
-data_engine.py    yfinance fetch + local cache load/save + ticker metadata
-metrics.py        Returns, volatility, skew, VaR/CVaR, hedge ratio, spread, z-score, pair signal
-data_worker.py    Background process that periodically refreshes the cache
-SP500.csv         Static ticker universe with sector metadata
-requirements.txt  Pip dependencies
+backend/                FastAPI app + per-card route modules
+  main.py               app entrypoint, CORS, GZip, StaticFiles mount
+  routes_*.py           one router per dashboard card / endpoint
+core/                   pure-Python data + math layer (no web deps)
+  data_engine.py        yfinance fetch, cache load/save (file or Postgres)
+  metrics.py            returns, vol, skew, VaR/CVaR, hedge ratio, z-score
+  signals.py            composite-Z signal model
+  factors.py            macro / sector factor builders
+  workers.py            cron-style cache refresher with --task=daily/intraday
+web/                    static frontend (no build step)
+  index.html            single-page dashboard
+  app.js                vanilla JS, Chart.js via CDN
+  styles.css            theme tokens + global themed scrollbars
+  config.js             auto-detects dev vs production API base
+data/SP500.csv          static ticker universe with sector metadata
+legacy/                 v1 Streamlit app (read-only reference)
+Procfile, app.json, runtime.txt   Heroku deploy manifests
+requirements.txt        pip dependencies
+HOSTING.md              full Heroku deploy walkthrough
 ```
 
-## Quick Start
+## Quick Start (local)
 ```powershell
-# 1. Create and activate a virtual environment (Windows PowerShell)
+# 1. Virtual env
 python -m venv venv
-venv\Scripts\Activate.ps1
+.\venv\Scripts\Activate.ps1
 
-# 2. Install dependencies
+# 2. Dependencies
 pip install -r requirements.txt
 
-# 3. (Optional) Run the cache worker in a separate terminal
-python data_worker.py --interval 60 --period 1y
+# 3. Fill the cache once (5–8 min, full S&P 500 from Yahoo)
+python -m core.workers --once --task=daily
 
-# 4. Run the dashboard
-streamlit run app.py
+# 4. Run the API + frontend on one port
+uvicorn backend.main:app --reload
+# → open http://127.0.0.1:8000
 ```
 
-If you skip step 3, you can refresh data manually from the sidebar via **Refresh Local Cache Now**.
+That's it — the FastAPI app mounts `web/` at `/` so the dashboard, the
+API (`/api/*`), and the OpenAPI explorer (`/docs`) all live on the same
+origin. No CORS, no second server, no `config.js` editing.
+
+If you prefer a separate static server (handy for cache-busting iteration):
+```powershell
+python -m http.server 5500 --directory web
+# config.js auto-detects this and points at http://127.0.0.1:8000
+```
 
 ## Concepts at a glance
 - **Returns** — daily percent change of close prices
@@ -49,19 +80,21 @@ If you skip step 3, you can refresh data manually from the sidebar via **Refresh
 - **Profitability Score** — weighted percentile rank across momentum, volatility, skew, tail risk, drawdown, and hit rate
 
 ## Roadmap
-- **Phase 1 (in progress):** replace Streamlit with a FastAPI backend serving JSON, and a static HTML/CSS/JS frontend hostable on GitHub Pages
-- **Phase 2:** expose all dashboard data via a versioned REST API and pipe it into an LLM advisor (Claude / GPT / Gemini) that incorporates external signals (news, macro, weather, etc.)
+- **Phase 1 (shipped):** FastAPI backend + static frontend, deployed to Heroku at [quantdash.tech](https://quantdash.tech) with same-origin StaticFiles, Postgres BYTEA cache, and Heroku Scheduler cron jobs.
+- **Phase 2 (next):** GitHub OAuth, persistent portfolios in Postgres, dedicated `/portfolio` page (allocation donut, equity curve, suggestions tab driven by the screener), optional broker import (Plaid / SnapTrade / CSV).
+- **Phase 3:** versioned REST API consumable by an LLM advisor that incorporates external signals (news, macro, weather, alt data).
 
-## Hosting (Phase 1)
+## Hosting
 
-The backend (FastAPI/uvicorn) and the static frontend are deployed separately:
+Production lives on Heroku at **[quantdash.tech](https://quantdash.tech)**. Full deploy walkthrough in [HOSTING.md](HOSTING.md).
 
-- **Frontend** (`web/`) → any static host: GitHub Pages, Cloudflare Pages, Netlify. No build step. Update `web/config.js` so `API_BASE` points at the deployed backend URL.
-- **Backend** (`backend/` + `core/`) → a small Python container on Render / Fly.io / Railway. The cache pickle is rebuilt by `core/workers.py`; on free tiers run it as a scheduled job (e.g. daily). For dev: `uvicorn backend.main:app --reload`. For prod: `uvicorn backend.main:app --host 0.0.0.0 --port $PORT --workers 2`.
-- **CORS** is currently `*` (read-only, no auth). When Phase 2 ships auth, lock origins to the deployed frontend domain.
-- **GZip middleware** (`fastapi.middleware.gzip`) is enabled with a 1 KB threshold — JSON payloads compress ~75-85%, which matters on free-tier bandwidth caps.
-- **Frontend refresh scheduler** (`web/app.js`) batches all polling into one heartbeat, runs single-flight per task, and pauses when the browser tab is hidden — drops idle API calls to zero.
-- **Health probe**: `GET /api/health` returns 200 when the process is up; point the host's liveness check there.
+The short version:
+- One Heroku app serves both the API and the frontend (same origin → no CORS).
+- Heroku Postgres `essential-0` stores the worker's pickle as a single BYTEA row — dyno filesystems are ephemeral, so writing to disk doesn't survive restarts.
+- Heroku Scheduler runs `python -m core.workers --once --task=daily` after the US close (22:00 UTC) and `--task=intraday` hourly for macro/regime tickers.
+- Custom domain via Let's Encrypt (Heroku Automated Certs).
+- Cost: $0 with GitHub Student Pack credits.
+- Health probe: `GET /api/health`.
 
 ## Phase 2 Plan — Postgres + Portfolio Accounts
 

@@ -5,7 +5,7 @@
   "keywords": ["fastapi", "quant", "dashboard", "yfinance"],
   "stack": "heroku-22",
   "addons": [
-    { "plan": "heroku-postgresql:mini" },
+    { "plan": "heroku-postgresql:essential-0" },
     { "plan": "scheduler:standard" }
   ],
   "env": {
