@@ -100,7 +100,14 @@ def _set_session_cookie(response: Response, token: str) -> None:
 
 
 def _clear_session_cookie(response: Response) -> None:
-    response.delete_cookie(_SESSION_COOKIE)
+    # Browsers (Chrome especially) require the deletion Set-Cookie to
+    # match the original cookie's path + samesite, otherwise the cookie
+    # sticks around and the user is still "logged in" after logout.
+    response.delete_cookie(
+        key=_SESSION_COOKIE,
+        path="/",
+        samesite="lax",
+    )
 
 
 def get_current_user_id(request: Request) -> Optional[int]:

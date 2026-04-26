@@ -137,6 +137,15 @@ def _ensure_ticker_cached(sym: str) -> None:
                 de.add_user_tickers(added)
             except Exception:
                 pass
+            # CRITICAL: drop the in-process memo so the very next
+            # /api/portfolio/analytics call sees the freshly-merged
+            # ticker. Without this, get_market_data() keeps returning
+            # the stale 300s-cached DataFrame and the new position
+            # shows '—' for price / value / day change.
+            try:
+                de.invalidate_memo()
+            except Exception:
+                pass
             # Best-effort name + sector lookup so the holdings table
             # doesn't show "Unknown / \u2014" for ETFs and foreign listings.
             try:

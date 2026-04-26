@@ -5,7 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>QuantDash — Quantitative Dashboard</title>
 <link href="https://fonts.googleapis.com/css2?family=Space+Mono:ital,wght@0,400;0,700;1,400&family=Syne:wght@400;600;700;800&display=swap" rel="stylesheet">
-<link rel="stylesheet" href="styles.css?v=18">
+<link rel="stylesheet" href="styles.css?v=19">
 </head>
 <body>
 
@@ -26,11 +26,11 @@
     <button class="pill" id="nav-screener">Screener</button>
     <button class="pill" id="nav-portfolio">Portfolio</button>
     <button class="pill" id="nav-docs">API Docs</button>
-    <!-- Auth slot: shows "Sign In" when anonymous, "<email> · Logout" when signed in.
-         Wired by app.js Auth module after /api/auth/me resolves. -->
+    <!-- Auth slot: shows "Sign In" when anonymous, "<name> ▾" account
+         button when signed in (opens the Account modal with profile,
+         notifications, and API-key sections). Wired by app.js Auth. -->
     <button class="pill" id="nav-auth" hidden>Sign In</button>
-    <span class="auth-user" id="nav-auth-user" hidden></span>
-    <button class="pill" id="nav-logout" hidden>Logout</button>
+    <button class="pill" id="nav-account" hidden>Account</button>
   </div>
 </nav>
 
@@ -473,6 +473,6 @@
 
 <!-- Order matters: config first (sets API_BASE), then app reads window.QD_CONFIG -->
 <script src="config.js"></script>
-<script src="app.js?v=18"></script>
+<script src="app.js?v=19"></script>
 </body>
 </html>

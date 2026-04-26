@@ -2083,23 +2083,22 @@ const Auth = (() => {
     els.error      = document.getElementById("auth-error");
     els.submit     = document.getElementById("auth-submit");
     els.navAuth    = document.getElementById("nav-auth");
-    els.navUser    = document.getElementById("nav-auth-user");
-    els.navLogout  = document.getElementById("nav-logout");
+    els.navAccount = document.getElementById("nav-account");
   }
 
   function _renderNav() {
     if (!els.navAuth) return;
     if (_user) {
       els.navAuth.hidden    = true;
-      els.navUser.hidden    = false;
-      els.navLogout.hidden  = false;
-      const label = _user.display_name || _user.email;
-      els.navUser.textContent = label;
-      els.navUser.title       = _user.email; // hover shows the email regardless
+      if (els.navAccount) {
+        els.navAccount.hidden = false;
+        const label = _user.display_name || (_user.email || "").split("@")[0] || "Account";
+        els.navAccount.textContent = label + " \u25BE";
+        els.navAccount.title = _user.email || "";
+      }
     } else {
       els.navAuth.hidden    = false;
-      els.navUser.hidden    = true;
-      els.navLogout.hidden  = true;
+      if (els.navAccount) els.navAccount.hidden = true;
     }
   }
 
@@ -2166,11 +2165,9 @@ const Auth = (() => {
       _user = r.user;
       _renderNav();
       close();
-      // Backend already migrated the device portfolio; re-pull so the UI
-      // reflects whatever the account now owns.
-      if (window.Portfolio?.load) {
-        try { await window.Portfolio.load(); } catch {}
-      }
+      // Backend already migrated the device portfolio; re-render so the
+      // UI reflects whatever the account now owns.
+      try { await _renderPortfolio(); } catch {}
     } catch (e) {
       // apiSend throws Error with .message containing the server detail.
       const msg = (e && e.message) || "Something went wrong.";
@@ -2185,9 +2182,40 @@ const Auth = (() => {
     try { await apiPost("/api/auth/logout", {}); } catch {}
     _user = null;
     _renderNav();
-    if (window.Portfolio?.load) {
-      try { await window.Portfolio.load(); } catch {}
-    }
+    // Re-render so the now-anonymous device portfolio (likely empty
+    // after migration on this device) is shown instead of the user's.
+    try { await _renderPortfolio(); } catch {}
+  }
+
+  function openAccount() {
+    if (!_user) { open("login"); return; }
+    const name  = _user.display_name || "";
+    const email = _user.email || "";
+    Modal.open("Account", `
+      <div class="account-modal">
+        <div class="acct-section">
+          <div class="acct-section-title">Profile</div>
+          <div class="acct-row"><span class="acct-k">Display name</span><span class="acct-v">${name || "\u2014"}</span></div>
+          <div class="acct-row"><span class="acct-k">Email</span><span class="acct-v">${email}</span></div>
+        </div>
+        <div class="acct-section">
+          <div class="acct-section-title">Notifications <span class="acct-soon">soon</span></div>
+          <div class="acct-row acct-muted"><span>Daily portfolio digest, signal alerts, drawdown warnings.</span></div>
+        </div>
+        <div class="acct-section">
+          <div class="acct-section-title">API Keys <span class="acct-soon">soon</span></div>
+          <div class="acct-row acct-muted"><span>Issue read-only tokens for programmatic access to your portfolio analytics.</span></div>
+        </div>
+        <div class="acct-actions">
+          <button class="pill" data-close>Close</button>
+          <button class="pill cta acct-logout" id="acct-logout">Sign out</button>
+        </div>
+      </div>
+    `);
+    document.getElementById("acct-logout")?.addEventListener("click", async () => {
+      Modal.close();
+      await logout();
+    });
   }
 
   function bind() {
@@ -2201,11 +2229,9 @@ const Auth = (() => {
     els.tabs.forEach(t =>
       t.addEventListener("click", () => _setMode(t.dataset.authMode))
     );
-    // Update display name to use email autocomplete on email field.
-    els.navUser?.addEventListener("click", () => { /* could open a profile menu later */ });
     els.form?.addEventListener("submit", submit);
     els.navAuth?.addEventListener("click", () => open("login"));
-    els.navLogout?.addEventListener("click", logout);
+    els.navAccount?.addEventListener("click", openAccount);
     document.addEventListener("keydown", (e) => {
       if (e.key === "Escape" && !els.modal.hidden) close();
     });
@@ -2213,7 +2239,7 @@ const Auth = (() => {
 
   function user() { return _user; }
 
-  return { bind, refresh, open, close, logout, user };
+  return { bind, refresh, open, close, logout, user, openAccount };
 })();
 
 // ----- Bind nav -----

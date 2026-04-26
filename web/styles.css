@@ -775,6 +775,10 @@ nav {
 
 .auth-form { display: flex; flex-direction: column; gap: 12px; }
 .auth-field { display: flex; flex-direction: column; gap: 5px; }
+/* hidden attribute would otherwise be overridden by the explicit
+   display:flex above — needed so the Display Name field actually
+   disappears on the Sign-in tab. */
+.auth-field[hidden] { display: none !important; }
 .auth-field span {
   font-size: 10px;
   color: var(--text3, #8a8a99);
@@ -819,6 +823,54 @@ nav {
   width: 100%;
 }
 .auth-submit:disabled { opacity: 0.5; cursor: wait; }
+
+
+/* ============================================================
+   ACCOUNT MODAL (Phase 2b)
+   Profile + placeholder sections for Notifications and API Keys.
+   ============================================================ */
+.account-modal { display: flex; flex-direction: column; gap: 14px; min-width: 320px; }
+.acct-section {
+  border: 1px solid rgba(255,255,255,0.08);
+  border-radius: 8px;
+  padding: 10px 12px;
+  background: rgba(255,255,255,0.02);
+}
+.acct-section-title {
+  font-size: 10px;
+  letter-spacing: 0.6px;
+  text-transform: uppercase;
+  color: var(--text3, #8a8a99);
+  font-family: 'Space Mono', monospace;
+  margin-bottom: 8px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.acct-soon {
+  font-size: 9px;
+  background: rgba(90,214,199,0.12);
+  color: var(--accent, #5ad6c7);
+  padding: 2px 6px;
+  border-radius: 4px;
+  letter-spacing: 0.4px;
+}
+.acct-row {
+  display: flex; justify-content: space-between; align-items: center;
+  padding: 4px 0;
+  font-size: 12px;
+  font-family: 'Space Mono', monospace;
+}
+.acct-row.acct-muted { color: var(--text3, #8a8a99); font-size: 11px; line-height: 1.45; }
+.acct-k { color: var(--text3, #8a8a99); font-size: 11px; }
+.acct-v { color: var(--text1, #f4f4f7); font-size: 12px; }
+.acct-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 4px; }
+.acct-logout {
+  background: rgba(255,64,96,0.18);
+  border-color: rgba(255,64,96,0.4);
+  color: #ff8092;
+}
+.acct-logout:hover { background: rgba(255,64,96,0.28); }
 
 
 /* ============================================================
