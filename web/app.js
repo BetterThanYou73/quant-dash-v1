@@ -1649,6 +1649,8 @@ const Auth = (() => {
     els.title      = document.getElementById("auth-title");
     els.tabs       = document.querySelectorAll(".auth-tab");
     els.form       = document.getElementById("auth-form");
+    els.name       = document.getElementById("auth-name");
+    els.signupOnly = document.querySelectorAll("[data-signup-only]");
     els.email      = document.getElementById("auth-email");
     els.password   = document.getElementById("auth-password");
     els.hint       = document.getElementById("auth-hint");
@@ -1665,8 +1667,9 @@ const Auth = (() => {
       els.navAuth.hidden    = true;
       els.navUser.hidden    = false;
       els.navLogout.hidden  = false;
-      els.navUser.textContent = _user.email;
-      els.navUser.title       = _user.email;
+      const label = _user.display_name || _user.email;
+      els.navUser.textContent = label;
+      els.navUser.title       = _user.email; // hover shows the email regardless
     } else {
       els.navAuth.hidden    = false;
       els.navUser.hidden    = true;
@@ -1676,7 +1679,8 @@ const Auth = (() => {
 
   function _setMode(mode) {
     _mode = mode;
-    if (mode === "signup") {
+    const isSignup = mode === "signup";
+    if (isSignup) {
       els.title.textContent  = "Create account";
       els.submit.textContent = "Create account";
       els.password.setAttribute("autocomplete", "new-password");
@@ -1687,6 +1691,8 @@ const Auth = (() => {
       els.password.setAttribute("autocomplete", "current-password");
       els.hint.textContent   = "Sign in to access your portfolio from any device.";
     }
+    // Show/hide signup-only fields (display name, etc).
+    els.signupOnly.forEach(el => { el.hidden = !isSignup; });
     els.tabs.forEach(t => t.classList.toggle("active", t.dataset.authMode === mode));
     els.error.hidden = true;
   }
@@ -1717,6 +1723,7 @@ const Auth = (() => {
     ev?.preventDefault();
     const email    = (els.email.value || "").trim();
     const password = els.password.value || "";
+    const name     = (els.name?.value || "").trim();
     if (!email || password.length < 8) {
       els.error.textContent = "Enter a valid email and password (8+ chars).";
       els.error.hidden = false;
@@ -1726,7 +1733,10 @@ const Auth = (() => {
     els.error.hidden = true;
     try {
       const path = _mode === "signup" ? "/api/auth/signup" : "/api/auth/login";
-      const r = await apiPost(path, { email, password });
+      const body = _mode === "signup"
+        ? { email, password, display_name: name || null }
+        : { email, password };
+      const r = await apiPost(path, body);
       _user = r.user;
       _renderNav();
       close();
@@ -1758,13 +1768,15 @@ const Auth = (() => {
     _cache();
     if (!els.modal) return;
     els.close?.addEventListener("click", close);
+    // Backdrop click closes (data-auth-close on the .modal-backdrop sibling).
     els.modal.addEventListener("click", (e) => {
-      // Backdrop click closes; clicks inside the .modal don't bubble here.
-      if (e.target === els.modal) close();
+      if (e.target === els.modal || e.target?.dataset?.authClose !== undefined) close();
     });
     els.tabs.forEach(t =>
       t.addEventListener("click", () => _setMode(t.dataset.authMode))
     );
+    // Update display name to use email autocomplete on email field.
+    els.navUser?.addEventListener("click", () => { /* could open a profile menu later */ });
     els.form?.addEventListener("submit", submit);
     els.navAuth?.addEventListener("click", () => open("login"));
     els.navLogout?.addEventListener("click", logout);

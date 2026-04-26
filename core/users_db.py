@@ -73,9 +73,12 @@ def ensure_schema() -> None:
                         id             BIGSERIAL PRIMARY KEY,
                         email          TEXT NOT NULL UNIQUE,
                         password_hash  TEXT NOT NULL,
+                        display_name   TEXT,
                         created_at     TIMESTAMPTZ DEFAULT now()
                     )
                 """)
+                # Idempotent migration for existing deploys.
+                cur.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS display_name TEXT")
                 cur.execute("CREATE INDEX IF NOT EXISTS idx_users_email ON users(LOWER(email))")
             else:
                 cur.execute("""
@@ -83,9 +86,16 @@ def ensure_schema() -> None:
                         id             INTEGER PRIMARY KEY AUTOINCREMENT,
                         email          TEXT NOT NULL UNIQUE,
                         password_hash  TEXT NOT NULL,
+                        display_name   TEXT,
                         created_at     TEXT DEFAULT (datetime('now'))
                     )
                 """)
+                # SQLite: ALTER TABLE ... ADD COLUMN tolerates missing columns
+                # but errors if it already exists, so guard with PRAGMA.
+                cur.execute("PRAGMA table_info(users)")
+                cols = {row[1] for row in cur.fetchall()}
+                if "display_name" not in cols:
+                    cur.execute("ALTER TABLE users ADD COLUMN display_name TEXT")
                 cur.execute("CREATE INDEX IF NOT EXISTS idx_users_email ON users(email)")
         _SCHEMA_READY = True
 
@@ -121,9 +131,9 @@ def verify_password(pw: str, hashed: str) -> bool:
 
 # ---- CRUD ---------------------------------------------------------------
 
-def create_user(email: str, password: str) -> dict:
-    """Returns {id, email, created_at}. Raises ValueError on duplicate
-    email or invalid input."""
+def create_user(email: str, password: str, display_name: Optional[str] = None) -> dict:
+    """Returns {id, email, display_name, created_at}. Raises ValueError on
+    duplicate email or invalid input."""
     ensure_schema()
     norm = normalize_email(email)
     if not is_valid_email(norm):
@@ -132,36 +142,41 @@ def create_user(email: str, password: str) -> dict:
     if pw_err:
         raise ValueError(pw_err)
 
+    # display_name is optional; trim and cap so a malicious client can't
+    # pad the column.
+    name = (display_name or "").strip() or None
+    if name and len(name) > 80:
+        name = name[:80]
+
     pw_hash = hash_password(password)
     ph = pdb._placeholder()
 
     with pdb._conn() as c:
         cur = c.cursor()
-        # Check for duplicate first so we can return a clean error.
         cur.execute(f"SELECT id FROM users WHERE email = {ph}", (norm,))
         if cur.fetchone():
             raise ValueError("email already registered")
 
         if pdb._backend() == "postgres":
             cur.execute(
-                f"INSERT INTO users (email, password_hash) VALUES ({ph}, {ph}) RETURNING id, created_at",
-                (norm, pw_hash),
+                f"INSERT INTO users (email, password_hash, display_name) VALUES ({ph}, {ph}, {ph}) RETURNING id, created_at",
+                (norm, pw_hash, name),
             )
             row = cur.fetchone()
             uid, created = row[0], row[1]
         else:
             cur.execute(
-                f"INSERT INTO users (email, password_hash) VALUES ({ph}, {ph})",
-                (norm, pw_hash),
+                f"INSERT INTO users (email, password_hash, display_name) VALUES ({ph}, {ph}, {ph})",
+                (norm, pw_hash, name),
             )
             uid = cur.lastrowid
             cur.execute(f"SELECT created_at FROM users WHERE id = {ph}", (uid,))
             created = cur.fetchone()[0]
-        return {"id": int(uid), "email": norm, "created_at": str(created)}
+        return {"id": int(uid), "email": norm, "display_name": name, "created_at": str(created)}
 
 
 def find_user_by_email(email: str) -> Optional[dict]:
-    """Returns {id, email, password_hash, created_at} or None."""
+    """Returns {id, email, password_hash, display_name, created_at} or None."""
     ensure_schema()
     norm = normalize_email(email)
     if not norm:
@@ -170,7 +185,7 @@ def find_user_by_email(email: str) -> Optional[dict]:
     with pdb._conn() as c:
         cur = c.cursor()
         cur.execute(
-            f"SELECT id, email, password_hash, created_at FROM users WHERE email = {ph}",
+            f"SELECT id, email, password_hash, display_name, created_at FROM users WHERE email = {ph}",
             (norm,),
         )
         row = cur.fetchone()
@@ -180,7 +195,8 @@ def find_user_by_email(email: str) -> Optional[dict]:
             "id": int(row[0]),
             "email": row[1],
             "password_hash": row[2],
-            "created_at": str(row[3]),
+            "display_name": row[3],
+            "created_at": str(row[4]),
         }
 
 
@@ -190,13 +206,13 @@ def find_user_by_id(user_id: int) -> Optional[dict]:
     with pdb._conn() as c:
         cur = c.cursor()
         cur.execute(
-            f"SELECT id, email, created_at FROM users WHERE id = {ph}",
+            f"SELECT id, email, display_name, created_at FROM users WHERE id = {ph}",
             (int(user_id),),
         )
         row = cur.fetchone()
         if not row:
             return None
-        return {"id": int(row[0]), "email": row[1], "created_at": str(row[2])}
+        return {"id": int(row[0]), "email": row[1], "display_name": row[2], "created_at": str(row[3])}
 
 
 # ---- device → user portfolio migration ----------------------------------

@@ -117,14 +117,19 @@ class Credentials(BaseModel):
     password: str = Field(..., min_length=1, max_length=128)
 
 
+class SignupBody(Credentials):
+    # Optional friendly name shown in nav. Not used as identity.
+    display_name: Optional[str] = Field(default=None, max_length=80)
+
+
 # ---- routes -------------------------------------------------------------
 
 @router.post("/signup")
-def signup(body: Credentials, request: Request, response: Response) -> dict[str, Any]:
+def signup(body: SignupBody, request: Request, response: Response) -> dict[str, Any]:
     """Create a new account, sign in immediately, and migrate the
     caller's device-scoped portfolio into the new account."""
     try:
-        user = udb.create_user(body.email, body.password)
+        user = udb.create_user(body.email, body.password, display_name=body.display_name)
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
 
@@ -136,7 +141,7 @@ def signup(body: Credentials, request: Request, response: Response) -> dict[str,
     _set_session_cookie(response, token)
     return {
         "ok": True,
-        "user": {"id": user["id"], "email": user["email"]},
+        "user": {"id": user["id"], "email": user["email"], "display_name": user.get("display_name")},
         "migrated_portfolios": migrated,
     }
 
@@ -158,7 +163,7 @@ def login(body: Credentials, request: Request, response: Response) -> dict[str, 
     _set_session_cookie(response, token)
     return {
         "ok": True,
-        "user": {"id": user["id"], "email": user["email"]},
+        "user": {"id": user["id"], "email": user["email"], "display_name": user.get("display_name")},
         "migrated_portfolios": migrated,
     }
 
@@ -183,4 +188,4 @@ def me(request: Request) -> dict[str, Any]:
     if not user:
         # Stale cookie (user was deleted). Treat as anonymous.
         return {"user": None}
-    return {"user": {"id": user["id"], "email": user["email"]}}
+    return {"user": {"id": user["id"], "email": user["email"], "display_name": user.get("display_name")}}

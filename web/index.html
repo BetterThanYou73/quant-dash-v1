@@ -5,7 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>QuantDash — Quantitative Dashboard</title>
 <link href="https://fonts.googleapis.com/css2?family=Space+Mono:ital,wght@0,400;0,700;1,400&family=Syne:wght@400;600;700;800&display=swap" rel="stylesheet">
-<link rel="stylesheet" href="styles.css?v=11">
+<link rel="stylesheet" href="styles.css?v=12">
 </head>
 <body>
 
@@ -37,30 +37,38 @@
 <!-- ============================================================
      AUTH MODAL (sign in / sign up)
      Tabbed: switches between login + signup without reopening.
+     Uses the .modal-root overlay pattern (fixed, centered, backdrop).
      ============================================================ -->
-<div id="auth-modal" class="modal-backdrop" hidden>
+<div id="auth-modal" class="modal-root" hidden>
+  <div class="modal-backdrop" data-auth-close></div>
   <div class="modal auth-modal" role="dialog" aria-modal="true" aria-labelledby="auth-title">
-    <header class="modal-head">
-      <h2 id="auth-title" class="modal-title">Sign in</h2>
+    <div class="modal-header">
+      <div class="modal-title" id="auth-title">Sign in</div>
       <button class="modal-close" id="auth-close" aria-label="Close">×</button>
-    </header>
-    <div class="auth-tabs">
-      <button class="auth-tab active" data-auth-mode="login">Sign in</button>
-      <button class="auth-tab" data-auth-mode="signup">Create account</button>
     </div>
-    <form class="auth-form" id="auth-form" autocomplete="on" novalidate>
-      <label class="auth-field">
-        <span>Email</span>
-        <input type="email" id="auth-email" autocomplete="email" required maxlength="254" placeholder="you@example.com">
-      </label>
-      <label class="auth-field">
-        <span>Password</span>
-        <input type="password" id="auth-password" autocomplete="current-password" required minlength="8" maxlength="128" placeholder="At least 8 characters">
-      </label>
-      <p class="auth-hint" id="auth-hint">Your portfolio carries over from this device when you sign up.</p>
-      <p class="auth-error" id="auth-error" hidden></p>
-      <button type="submit" class="pill cta auth-submit" id="auth-submit">Sign in</button>
-    </form>
+    <div class="modal-body">
+      <div class="auth-tabs">
+        <button class="auth-tab active" data-auth-mode="login" type="button">Sign in</button>
+        <button class="auth-tab" data-auth-mode="signup" type="button">Create account</button>
+      </div>
+      <form class="auth-form" id="auth-form" autocomplete="on" novalidate>
+        <label class="auth-field" data-signup-only hidden>
+          <span>Display name</span>
+          <input type="text" id="auth-name" autocomplete="name" maxlength="80" placeholder="What should we call you?">
+        </label>
+        <label class="auth-field">
+          <span>Email</span>
+          <input type="email" id="auth-email" autocomplete="email" required maxlength="254" placeholder="you@example.com">
+        </label>
+        <label class="auth-field">
+          <span>Password</span>
+          <input type="password" id="auth-password" autocomplete="current-password" required minlength="8" maxlength="128" placeholder="At least 8 characters">
+        </label>
+        <p class="auth-hint" id="auth-hint">Sign in to access your portfolio from any device.</p>
+        <p class="auth-error" id="auth-error" hidden></p>
+        <button type="submit" class="pill cta auth-submit" id="auth-submit">Sign in</button>
+      </form>
+    </div>
   </div>
 </div>
 
@@ -337,6 +345,6 @@
 
 <!-- Order matters: config first (sets API_BASE), then app reads window.QD_CONFIG -->
 <script src="config.js"></script>
-<script src="app.js?v=11"></script>
+<script src="app.js?v=12"></script>
 </body>
 </html>
