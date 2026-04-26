@@ -1,0 +1,26 @@
+# Files/dirs Heroku should NOT include in the build slug.
+# This makes the slug smaller (faster boots) and is a defense-in-depth
+# layer in case something slips past .gitignore.
+
+venv/
+.venv/
+__pycache__/
+*.pyc
+*.pyo
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Local cache (Postgres takes over in production)
+cache/
+
+# Legacy v1 Streamlit app — not part of the deployed dashboard
+legacy/
+
+# Dev-only files
+.vscode/
+.idea/
+*.log
+README.md
+HOSTING.md
+LICENSE
