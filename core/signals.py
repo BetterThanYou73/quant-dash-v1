@@ -1,16 +1,23 @@
 """
-Signal generation logic — pure functions, no UI/web dependencies.
+Multi-Factor Composite (MFC) signal generation.
 
-This module is the "brain" behind the Market Overview view. Given a set of
-close prices, it computes per-ticker metrics (momentum, vol, skew, tail risk,
-drawdown, hit rate), combines them into a single profitability score via
-percentile-rank weighting, and assigns a categorical signal.
+Pipeline:
+  1. core.factors.compute_factor_panel(...) → per-ticker raw factor values
+  2. winsorize each factor at ±3σ to neutralize outliers
+  3. z-score each factor cross-sectionally across the FULL universe
+  4. equal-weight average → Composite_Z
+  5. percentile-rank Composite_Z → Composite_Percentile (0–100)
+  6. apply distribution-based label rules → "Strong Buy" / "Buy" / "Watch" / "Avoid" / "High Risk"
 
-It is intentionally framework-agnostic so that:
-  - the legacy Streamlit app can call it
-  - the new FastAPI backend can call it
-  - a future CLI / notebook / cron job can call it
-without any of them depending on each other.
+Why equal weights instead of optimized: DeMiguel, Garlappi & Uppal (2009)
+showed that 1/N portfolios beat optimized weights out-of-sample because
+estimation error in the optimizer dominates any in-sample fit. Same
+phenomenon applies to factor weights.
+
+Why z-scores cross-sectionally and not within the watchlist: ranks are only
+meaningful when computed against a large reference universe (we use the full
+S&P 500). Otherwise a stock's "score" depends on which other stocks happen
+to be in the watchlist, which is nonsense.
 """
 
 from __future__ import annotations
@@ -18,20 +25,10 @@ from __future__ import annotations
 import numpy as np
 import pandas as pd
 
-from core import metrics
+from core import factors
 
 
-# --- Helpers --------------------------------------------------------------
-
-def pct_rank(series: pd.Series) -> pd.Series:
-    """Convert raw values to percentile ranks in [0, 1].
-
-    Why: different metrics live on different scales (momentum is a %, skew is
-    unitless, CVaR is a small negative number). To combine them into one score
-    we first put them all on the same 0..1 scale via percentile rank.
-    """
-    return series.rank(pct=True)
-
+# --- Helpers consumed by other modules (do not remove) -------------------
 
 def extract_close_prices(data: pd.DataFrame) -> pd.DataFrame:
     """Pull the 'Close' columns out of a yfinance multi-ticker download.
@@ -39,6 +36,8 @@ def extract_close_prices(data: pd.DataFrame) -> pd.DataFrame:
     yfinance returns a DataFrame with a MultiIndex on the columns when you
     download multiple tickers. The structure depends on the `group_by` arg,
     so we defensively check both layouts and a single-level fallback.
+
+    Used by routes_quote, routes_pairs, routes_risk via backend._helpers.
     """
     if data.empty:
         return pd.DataFrame()
@@ -57,130 +56,185 @@ def extract_close_prices(data: pd.DataFrame) -> pd.DataFrame:
             return pd.DataFrame()
         close = data["Close"]
 
-    # Single-ticker downloads return a Series; normalize to DataFrame so the
-    # rest of the pipeline can treat all cases uniformly.
     if isinstance(close, pd.Series):
         close = close.to_frame()
     return close
 
 
-# --- Main builder ---------------------------------------------------------
+def extract_volumes(data: pd.DataFrame) -> pd.DataFrame:
+    """Pull 'Volume' columns from a yfinance multi-ticker download.
 
-# Minimum trading days required to compute meaningful 63-day windows.
-# Below this, momentum/drawdown numbers are too noisy to rank against peers.
-MIN_HISTORY_DAYS = 64
+    Mirror of extract_close_prices for the Volume field. Used by the MFC
+    pipeline to compute the average-dollar-volume liquidity factor.
+    """
+    if data.empty:
+        return pd.DataFrame()
+
+    if isinstance(data.columns, pd.MultiIndex):
+        level0 = set(data.columns.get_level_values(0))
+        level1 = set(data.columns.get_level_values(1))
+        if "Volume" in level0:
+            vol = data["Volume"]
+        elif "Volume" in level1:
+            vol = data.xs("Volume", axis=1, level=1)
+        else:
+            return pd.DataFrame()
+    else:
+        if "Volume" not in data.columns:
+            return pd.DataFrame()
+        vol = data["Volume"]
+
+    if isinstance(vol, pd.Series):
+        vol = vol.to_frame()
+    return vol
 
 
-def build_summary(close_prices: pd.DataFrame) -> tuple[pd.DataFrame, list[str]]:
-    """Compute the per-ticker summary table and profitability score.
+# Kept for back-compat with old callers / tests. Not used by MFC.
+MIN_HISTORY_DAYS = factors.MIN_HISTORY_DAYS
+
+
+# --- Composite construction ----------------------------------------------
+
+# Liquidity floor for "Buy"-class labels. Below this, the stock cannot be
+# meaningfully accumulated without moving the price. $5M/day is a common
+# heuristic for institutional-tradeable size; lower it to $1M for retail.
+MIN_DOLLAR_VOLUME_BUY = 5_000_000
+
+
+def winsorize_zscore(series: pd.Series, cap: float = 3.0) -> pd.Series:
+    """Cross-sectional z-score, then clip extreme values at ±cap.
+
+    Winsorization stops one wild outlier (e.g. a stock that just IPO'd
+    and tripled) from dominating the composite for everyone else.
+    """
+    s = series.replace([np.inf, -np.inf], np.nan)
+    mu = s.mean()
+    sd = s.std(ddof=1)
+    if pd.isna(sd) or sd == 0:
+        return pd.Series(0.0, index=series.index)
+    z = (s - mu) / sd
+    return z.clip(lower=-cap, upper=cap)
+
+
+def _classify_row(row: pd.Series, cvar_floor: float) -> str:
+    """Apply the label rules to a single row of the panel.
+
+    Distribution-based thresholds — adapt automatically to market state.
+    A stock can never be both "Buy" and "High Risk"; rules are evaluated
+    in priority order with the first match winning.
+    """
+    pct = row.get("Composite_Percentile")
+    if pd.isna(pct):
+        return "Insufficient Data"
+
+    alpha = row.get("Alpha_Annualized", float("nan"))
+    sortino = row.get("Sortino", float("nan"))
+    cvar = row.get("CVaR_5", float("nan"))
+    dd = row.get("Max_Drawdown_252d", float("nan"))
+    adv = row.get("Avg_Dollar_Vol_21d", float("nan"))
+
+    # --- High Risk: bottom decile AND tail loss in worst 5% of universe.
+    # Both conditions must hold so we don't mark every cheap stock as
+    # dangerous — only the ones with *demonstrated* tail damage.
+    if pct <= 10 and pd.notna(cvar) and pd.notna(cvar_floor) and cvar <= cvar_floor:
+        return "High Risk"
+
+    # --- Avoid: weak score OR severe drawdown OR significantly underperforms SPY.
+    if pct <= 25:
+        return "Avoid"
+    if pd.notna(dd) and dd <= -0.35:
+        return "Avoid"
+    if pd.notna(alpha) and alpha <= -0.05:  # losing >5%/yr to SPY
+        return "Avoid"
+
+    # --- Strong Buy: top decile + outperforming SPY + smooth uptrend + tradeable.
+    if (
+        pct >= 90
+        and pd.notna(alpha) and alpha > 0
+        and pd.notna(sortino) and sortino > 0
+        and pd.notna(adv) and adv >= MIN_DOLLAR_VOLUME_BUY
+    ):
+        return "Strong Buy"
+
+    # --- Buy: top quartile, with the same outperformance/quality gates.
+    if (
+        pct >= 75
+        and pd.notna(alpha) and alpha > 0
+        and pd.notna(sortino) and sortino > 0
+    ):
+        return "Buy"
+
+    return "Watch"
+
+
+def build_composite_signals(
+    close_prices: pd.DataFrame,
+    volumes: pd.DataFrame | None,
+    benchmark_prices: pd.Series,
+    watchlist: list[str] | None = None,
+) -> tuple[pd.DataFrame, list[str]]:
+    """Build the full signal table.
+
+    Computes factor z-scores against the FULL `close_prices` universe
+    (typically the S&P 500), then optionally filters the result to a
+    watchlist subset. The ranks are stable regardless of watchlist —
+    that's the whole point of computing them universe-wide.
 
     Returns
     -------
-    summary_df : pd.DataFrame
-        One row per ticker, sorted by Profitability Score descending.
-        Includes a categorical 'Signal' column ('Long Candidate' | 'Watch' | 'High Risk').
-    skipped_tickers : list[str]
-        Tickers dropped due to insufficient history.
+    signal_df : DataFrame with Ticker as a column. Includes raw factor
+                values, z-scores, Composite_Z, Composite_Percentile, Signal.
+                Sorted by Composite_Z descending.
+    skipped   : list of tickers dropped due to insufficient history.
     """
-    summary_data: list[dict] = []
-    skipped_tickers: list[str] = []
+    universe_tickers = list(close_prices.columns)
 
-    # --- Per-ticker pass: compute raw metrics --------------------------
-    for ticker in close_prices.columns:
-        stock_series = close_prices[ticker].dropna()
-        if stock_series.empty or len(stock_series) < MIN_HISTORY_DAYS:
-            skipped_tickers.append(ticker)
-            continue
+    panel = factors.compute_factor_panel(close_prices, volumes, benchmark_prices)
+    skipped = sorted(set(universe_tickers) - set(panel.index))
 
-        returns_series, vol_series, skewness = metrics.calculate_metrics(stock_series)
-        if returns_series.empty:
-            skipped_tickers.append(ticker)
-            continue
+    if panel.empty:
+        return pd.DataFrame(), skipped
 
-        tail = metrics.calculate_tail_metrics(stock_series)
+    # --- Z-scores. CVaR is negated because less-negative is better. ----
+    # The z-score on a *negated* CVaR series means "the worse your tail
+    # loss, the lower your z" which matches the other factors' convention
+    # (higher z = better factor exposure).
+    panel["z_momentum"] = winsorize_zscore(panel["Momentum_12_1"])
+    panel["z_sortino"]  = winsorize_zscore(panel["Sortino"])
+    panel["z_alpha"]    = winsorize_zscore(panel["Alpha_Annualized"])
+    panel["z_cvar"]     = winsorize_zscore(-panel["CVaR_5"])
 
-        # Latest snapshot values
-        latest_price = float(stock_series.iloc[-1])
-        daily_return = float(returns_series.iloc[-1])
-        latest_volatility = float(vol_series.iloc[-1]) if pd.notna(vol_series.iloc[-1]) else float("nan")
-        skewness_value = float(skewness) if pd.notna(skewness) else float("nan")
+    # --- Composite: equal-weighted mean. ------------------------------
+    # If a row is missing one factor we skipna so the others still count
+    # — better than dropping the ticker entirely for one missing input.
+    panel["Composite_Z"] = panel[["z_momentum", "z_sortino", "z_alpha", "z_cvar"]].mean(axis=1)
+    panel["Composite_Percentile"] = panel["Composite_Z"].rank(pct=True) * 100.0
 
-        # Trend / momentum: % change over the trailing window
-        mom_21 = float(stock_series.pct_change(21).iloc[-1])
-        mom_63 = float(stock_series.pct_change(63).iloc[-1])
+    # --- Distribution-based gates. -------------------------------------
+    # The CVaR floor for "High Risk" is the 5th percentile of the universe's
+    # CVaR distribution (i.e. the worst 5% of tails). Adapts to market state.
+    cvar_floor = float(panel["CVaR_5"].quantile(0.05)) if panel["CVaR_5"].notna().any() else float("nan")
 
-        # Hit rate: fraction of up-days in the last month — proxy for trend reliability
-        hit_rate_21 = float(returns_series.tail(21).gt(0).mean())
+    panel["Signal"] = panel.apply(lambda row: _classify_row(row, cvar_floor), axis=1)
 
-        # 63-day max drawdown: worst peak-to-trough drop in the trailing quarter
-        rolling_peak_63 = stock_series.tail(63).cummax()
-        drawdown_63 = float(((stock_series.tail(63) / rolling_peak_63) - 1.0).min())
+    # --- Optional watchlist filter -------------------------------------
+    # Filtering happens AFTER ranks are computed so a watchlist-sized
+    # universe doesn't distort the percentiles.
+    if watchlist:
+        wanted = {t.upper() for t in watchlist}
+        panel = panel[panel.index.isin(wanted)]
 
-        summary_data.append({
-            "Ticker": ticker,
-            "Price": latest_price,
-            "Daily Return Numeric": daily_return,
-            "21d Momentum Numeric": mom_21,
-            "63d Momentum Numeric": mom_63,
-            "20d Volatility Numeric": latest_volatility,
-            "20d Skewness Numeric": skewness_value,
-            "Hit Rate 21d Numeric": hit_rate_21,
-            "Max Drawdown 63d Numeric": drawdown_63,
-            "5% VaR Numeric": tail["var_5"],
-            "5% CVaR Numeric": tail["cvar_5"],
-            "Tail Ratio Numeric": tail["tail_ratio"],
-            "Excess Kurtosis Numeric": tail["excess_kurtosis"],
-            "JB p-Value Numeric": tail["jb_pvalue"],
-        })
+    panel = panel.sort_values("Composite_Z", ascending=False)
 
-    if not summary_data:
-        return pd.DataFrame(), skipped_tickers
+    return panel.reset_index(), skipped
 
-    summary_df = pd.DataFrame(summary_data)
 
-    # --- Cross-sectional pass: clean + rank ----------------------------
-    # Replace inf and fill NaNs with the column median so one bad ticker
-    # doesn't poison the percentile-rank calculation.
-    rank_cols = [
-        "21d Momentum Numeric",
-        "63d Momentum Numeric",
-        "20d Volatility Numeric",
-        "20d Skewness Numeric",
-        "5% CVaR Numeric",
-        "Max Drawdown 63d Numeric",
-        "Hit Rate 21d Numeric",
-    ]
-    for col in rank_cols:
-        summary_df[col] = summary_df[col].replace([np.inf, -np.inf], np.nan)
-        summary_df[col] = summary_df[col].fillna(summary_df[col].median())
+# --- Back-compat shim ----------------------------------------------------
 
-    # Weighted composite score. Weights are hand-tuned, sum to 1.0.
-    # Note the negation on volatility, CVaR, and drawdown — for these
-    # "less is better", so we flip the sign before ranking.
-    summary_df["Profitability Score"] = (
-        0.25 * pct_rank(summary_df["21d Momentum Numeric"])
-        + 0.20 * pct_rank(summary_df["63d Momentum Numeric"])
-        + 0.15 * pct_rank(-summary_df["20d Volatility Numeric"])
-        + 0.15 * pct_rank(summary_df["20d Skewness Numeric"])
-        + 0.10 * pct_rank(-summary_df["5% CVaR Numeric"].abs())
-        + 0.10 * pct_rank(-summary_df["Max Drawdown 63d Numeric"].abs())
-        + 0.05 * pct_rank(summary_df["Hit Rate 21d Numeric"])
+# Old code in legacy/ may still call build_summary(). We don't use it from
+# the new API. Soft-fail rather than silently returning an old shape.
+def build_summary(*args, **kwargs):  # pragma: no cover
+    raise NotImplementedError(
+        "build_summary() was the old percentile-rank composite and has been "
+        "replaced. Use signals.build_composite_signals() instead."
     )
-
-    # Categorical signal — applied AFTER scoring so thresholds are absolute.
-    summary_df["Signal"] = "Watch"
-    summary_df.loc[
-        (summary_df["Profitability Score"] >= 0.70)
-        & (summary_df["5% CVaR Numeric"] > -0.10)
-        & (summary_df["Max Drawdown 63d Numeric"] > -0.20),
-        "Signal",
-    ] = "Long Candidate"
-    summary_df.loc[
-        (summary_df["Profitability Score"] < 0.40)
-        | (summary_df["5% CVaR Numeric"] <= -0.12)
-        | (summary_df["Max Drawdown 63d Numeric"] <= -0.25),
-        "Signal",
-    ] = "High Risk"
-
-    summary_df["Profitability Score"] = summary_df["Profitability Score"].round(3)
-    return summary_df.sort_values("Profitability Score", ascending=False), skipped_tickers

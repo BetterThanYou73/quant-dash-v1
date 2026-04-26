@@ -34,17 +34,17 @@
   <!-- STAT STRIP -->
   <div class="stat-strip" id="stat-strip">
     <div class="stat-card">
-      <div class="stat-label">Top Candidate</div>
+      <div class="stat-label">Top Composite</div>
       <div class="stat-val" id="stat-top"><span class="skeleton" style="width:80px;height:18px"></span></div>
       <div class="stat-sub neu" id="stat-top-sub">Loading…</div>
     </div>
     <div class="stat-card">
-      <div class="stat-label">Highest Volatility</div>
+      <div class="stat-label">Best Alpha vs SPY</div>
       <div class="stat-val" id="stat-vol"><span class="skeleton" style="width:80px;height:18px"></span></div>
       <div class="stat-sub neu" id="stat-vol-sub">Loading…</div>
     </div>
     <div class="stat-card">
-      <div class="stat-label">Worst Tail (CVaR)</div>
+      <div class="stat-label">Worst Drawdown 252d</div>
       <div class="stat-val" id="stat-cvar"><span class="skeleton" style="width:80px;height:18px"></span></div>
       <div class="stat-sub neu" id="stat-cvar-sub">Loading…</div>
     </div>
@@ -54,9 +54,9 @@
       <div class="stat-sub neu" id="stat-universe-sub">Loading…</div>
     </div>
     <div class="stat-card">
-      <div class="stat-label">Long Candidates</div>
+      <div class="stat-label">Buy + Strong Buy</div>
       <div class="stat-val" id="stat-long"><span class="skeleton" style="width:30px;height:18px"></span></div>
-      <div class="stat-sub neu">From scored universe</div>
+      <div class="stat-sub neu">Within watchlist</div>
     </div>
     <div class="stat-card">
       <div class="stat-label">Cache Last Updated</div>
@@ -92,11 +92,20 @@
       <div class="chart-card">
         <div class="card-header">
           <div class="card-title">Trade Signals</div>
-          <span class="card-badge badge-green">PROFITABILITY MODEL</span>
+          <span class="card-badge badge-green">MFC v1</span>
           <span class="card-badge badge-blue" id="signals-meta">LIVE</span>
         </div>
         <div id="signals-body">
           <div class="placeholder">Loading signals…</div>
+        </div>
+        <div class="placeholder" style="font-size:10px;color:var(--text-dim);text-align:left;padding:10px 14px;line-height:1.5">
+          <strong>Model:</strong> Multi-Factor Composite — equal-weighted z-scores of momentum 12-1,
+          Sortino, alpha vs SPY (126d), and 5% CVaR (252d), ranked across the cached S&amp;P 500 universe.
+          Composite shown as percentile bar + raw z-score (+1 = one stdev above universe mean).
+          <br>
+          <strong>Disclosure:</strong> Factor investing has historical evidence at the portfolio level
+          over multi-year horizons. Single-stock signals are noisy.
+          This is research analysis, not investment advice. Past performance does not predict future returns.
         </div>
       </div>
 
