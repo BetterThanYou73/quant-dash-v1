@@ -914,6 +914,21 @@ nav {
 .pf-badge-w { background: rgba(255,204,0,0.08); color: #ffcc00; border: 1px solid rgba(255,204,0,0.18); }
 .pf-badge-r { background: rgba(255,64,96,0.08); color: var(--danger); border: 1px solid rgba(255,64,96,0.18); }
 
+/* Refresh-prices button in the Holdings card header. Compact pill that
+   fits the header row and shows status text inline while running. */
+.pf-refresh-btn {
+  font-size: 10px;
+  padding: 4px 10px;
+  letter-spacing: 0.4px;
+  font-family: 'Space Mono', monospace;
+  margin-left: auto; /* push to the right of the header row */
+  max-width: 60%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.pf-refresh-btn:disabled { opacity: 0.6; cursor: wait; }
+
 /* Row layouts */
 .pf-row { display: grid; gap: 14px; margin-top: 14px; }
 .pf-row-2   { grid-template-columns: 1fr 1fr; }

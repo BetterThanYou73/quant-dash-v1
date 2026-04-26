@@ -110,13 +110,18 @@ def _ensure_ticker_cached(sym: str) -> None:
     leveraged like SOXL). Synchronous yfinance call, ~1-2s for one
     ticker. Failures are swallowed: the position row is already saved,
     analytics will just show '\u2014' until the next worker refresh.
+
+    If the bare symbol returns no data on Yahoo, we transparently try
+    Canadian-suffix variants (.TO, .V) and merge those rows under the
+    BARE symbol so analytics keys (which use the position's stored
+    ticker) still match. This lets a user type "TLO" or "XEQT" and get
+    Toronto-listed prices without having to know the exchange suffix.
     """
     try:
         existing, _ = de.load_cached_market_data()
         if not existing.empty:
             cols = existing.columns
             if hasattr(cols, "get_level_values"):
-                # MultiIndex columns: (field, ticker)
                 try:
                     have = set(cols.get_level_values(-1).unique())
                 except Exception:
@@ -124,39 +129,75 @@ def _ensure_ticker_cached(sym: str) -> None:
             else:
                 have = set(cols)
             if sym in have:
-                # Already cached \u2014 just make sure the worker keeps it.
                 try:
                     de.add_user_tickers([sym])
                 except Exception:
                     pass
                 return
 
-        added, _failed = de.merge_tickers_into_cache([sym], period="2y")
-        if added:
-            try:
-                de.add_user_tickers(added)
-            except Exception:
-                pass
-            # CRITICAL: drop the in-process memo so the very next
-            # /api/portfolio/analytics call sees the freshly-merged
-            # ticker. Without this, get_market_data() keeps returning
-            # the stale 300s-cached DataFrame and the new position
-            # shows '—' for price / value / day change.
-            try:
-                de.invalidate_memo()
-            except Exception:
-                pass
-            # Best-effort name + sector lookup so the holdings table
-            # doesn't show "Unknown / \u2014" for ETFs and foreign listings.
-            try:
-                import yfinance as yf  # local import; already a dep
+        # Try the bare symbol first, then Canadian fallbacks. Stop at
+        # the first variant yfinance actually returns rows for.
+        candidates = [sym]
+        if "." not in sym:
+            candidates.extend([f"{sym}.TO", f"{sym}.V"])
 
-                info = yf.Ticker(sym).info or {}
-                name = info.get("longName") or info.get("shortName") or sym
-                sector = info.get("sector") or info.get("category") or "ETF"
-                de.upsert_user_meta(sym, name=name, sector=sector)
+        added: list[str] = []
+        used_variant: str | None = None
+        for cand in candidates:
+            added_v, _failed_v = de.merge_tickers_into_cache([cand], period="2y")
+            if added_v:
+                added = added_v
+                used_variant = cand
+                break
+
+        if not added or not used_variant:
+            return
+
+        # If the variant differs from the bare symbol, alias the columns
+        # back to the bare symbol so analytics finds them under the
+        # ticker the user typed. We re-load, rename, and re-save.
+        if used_variant != sym:
+            try:
+                df, _ = de.load_cached_market_data()
+                if not df.empty and isinstance(df.columns, pd.MultiIndex):
+                    new_cols = []
+                    seen_bare = False
+                    for col in df.columns:
+                        # MultiIndex levels: (field, ticker)
+                        if col[-1] == used_variant:
+                            new_cols.append(tuple([*col[:-1], sym]))
+                            seen_bare = True
+                        else:
+                            new_cols.append(col)
+                    if seen_bare:
+                        df.columns = pd.MultiIndex.from_tuples(new_cols)
+                        # Drop any duplicate (field, sym) pairs left over
+                        df = df.loc[:, ~df.columns.duplicated(keep="last")]
+                        de.save_market_data_cache(df)
             except Exception:
                 pass
+
+        try:
+            de.add_user_tickers([sym])
+        except Exception:
+            pass
+        # CRITICAL: drop the in-process memo so the very next
+        # /api/portfolio/analytics call sees the freshly-merged ticker.
+        try:
+            de.invalidate_memo()
+        except Exception:
+            pass
+        # Best-effort name + sector lookup using the variant that worked
+        # (its .info has real metadata; the bare symbol's wouldn't).
+        try:
+            import yfinance as yf
+
+            info = yf.Ticker(used_variant).info or {}
+            name = info.get("longName") or info.get("shortName") or sym
+            sector = info.get("sector") or info.get("category") or "ETF"
+            de.upsert_user_meta(sym, name=name, sector=sector)
+        except Exception:
+            pass
     except Exception:
         # Never let a cache hydration failure break the add-position flow.
         pass
@@ -293,6 +334,64 @@ def replace_all(body: BulkPositions, request: Request, response: Response) -> di
 
     _bump_analytics_cache(f"{kind}:{oid}")
     return {"ok": True, "written": n}
+
+
+@router.post("/refresh")
+def refresh_prices(request: Request, response: Response) -> dict[str, Any]:
+    """Force-rehydrate prices for every position in the user's portfolio.
+
+    Useful when:
+      - A position was added during a yfinance hiccup and never got a
+        price (the column never made it into the cache).
+      - A position used a bare symbol like "TLO" before .TO fallback
+        existed; this endpoint will retry with suffix variants and
+        alias the columns to the bare ticker.
+
+    Returns per-ticker status so the UI can show a small toast.
+    """
+    kind, oid = _resolve_owner(request, response)
+    positions = pdb.list_positions(kind, oid)
+    if not positions:
+        return {"ok": True, "refreshed": [], "missing": [], "n": 0}
+
+    refreshed: list[str] = []
+    missing: list[str] = []
+    for p in positions:
+        sym = p["ticker"]
+        # Force a re-fetch by checking cache state, then merging if absent.
+        # _ensure_ticker_cached short-circuits if already cached, so to
+        # actually retry a missing ticker we drop the alias check and
+        # call merge directly via the helper.
+        before, _ = de.load_cached_market_data()
+        had = False
+        if not before.empty:
+            cols = before.columns
+            try:
+                have = set(cols.get_level_values(-1).unique()) if hasattr(cols, "get_level_values") else set(cols)
+            except Exception:
+                have = set()
+            had = sym in have
+
+        _ensure_ticker_cached(sym)
+
+        after, _ = de.load_cached_market_data()
+        ok = False
+        if not after.empty:
+            try:
+                have2 = set(after.columns.get_level_values(-1).unique()) if hasattr(after.columns, "get_level_values") else set(after.columns)
+            except Exception:
+                have2 = set()
+            ok = sym in have2
+
+        if ok and not had:
+            refreshed.append(sym)
+        elif not ok:
+            missing.append(sym)
+
+    # Drop analytics + history caches since prices may have moved.
+    de.invalidate_memo()
+    _bump_analytics_cache(f"{kind}:{oid}")
+    return {"ok": True, "refreshed": refreshed, "missing": missing, "n": len(positions)}
 
 
 # ---- analytics ----------------------------------------------------------

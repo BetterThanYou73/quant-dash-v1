@@ -1429,6 +1429,33 @@ async function openPortfolio() {
     addBtn.addEventListener("click", _addPortfolioPosition);
     addBtn._wired = true;  // bindNav can call us repeatedly without dup-binding
   }
+  const refreshBtn = document.getElementById("pf-refresh");
+  if (refreshBtn && !refreshBtn._wired) {
+    refreshBtn.addEventListener("click", _refreshPortfolioPrices);
+    refreshBtn._wired = true;
+  }
+  await _renderPortfolio();
+}
+
+async function _refreshPortfolioPrices() {
+  const btn = document.getElementById("pf-refresh");
+  if (!btn) return;
+  const original = btn.textContent;
+  btn.disabled = true;
+  btn.textContent = "Refreshing\u2026";
+  try {
+    const r = await apiPost("/api/portfolio/refresh", {});
+    const parts = [];
+    if (r.refreshed?.length) parts.push(`Loaded ${r.refreshed.join(", ")}`);
+    if (r.missing?.length)   parts.push(`Could not find: ${r.missing.join(", ")}`);
+    if (!parts.length)       parts.push("All positions already have prices.");
+    btn.textContent = parts.join(" \u00b7 ").slice(0, 80);
+    setTimeout(() => { btn.textContent = original; btn.disabled = false; }, 3500);
+  } catch (e) {
+    btn.textContent = `Failed: ${e.message || "error"}`;
+    setTimeout(() => { btn.textContent = original; btn.disabled = false; }, 3500);
+    return;
+  }
   await _renderPortfolio();
 }
 
@@ -1806,7 +1833,10 @@ async function _renderPortfolioPerf() {
   }];
   if (hasBench) {
     datasets.push({
-      label: hist.benchmark || "SPY",
+      // Make it explicit in the legend + tooltip that SPY is rebased
+      // to portfolio start (not the live SPY share price), otherwise
+      // users read "SPY: $64" as "SPY costs $64" and panic.
+      label: `${hist.benchmark || "SPY"} (rebased)`,
       data: bench,
       borderColor: benchColor,
       backgroundColor: "transparent",
@@ -1817,6 +1847,10 @@ async function _renderPortfolioPerf() {
       borderWidth: 1.2,
     });
   }
+  // Pre-compute % returns from index 0 so the tooltip can show both
+  // the rebased dollar and the cumulative return at any hovered point.
+  const startPort = values[0] || 0;
+  const startBench = bench.find(v => v != null) || 0;
   chartRegistry["pfperf"] = new Chart(canvas, {
     type: "line",
     data: { labels, datasets },
@@ -1834,7 +1868,23 @@ async function _renderPortfolioPerf() {
         legend: { display: hasBench, position: "bottom", labels: { boxWidth: 10, boxHeight: 2, padding: 12 } },
         tooltip: {
           callbacks: {
-            label: (ctx) => `${ctx.dataset.label}: $${Number(ctx.parsed.y).toLocaleString("en-US", { maximumFractionDigits: 2 })}`,
+            label: (ctx) => {
+              const y = Number(ctx.parsed.y);
+              const isBench = ctx.datasetIndex === 1;
+              const baseline = isBench ? startBench : startPort;
+              const ret = baseline > 0 ? (y / baseline - 1) : 0;
+              const pct = `${ret >= 0 ? "+" : ""}${(ret * 100).toFixed(2)}%`;
+              const dollar = "$" + y.toLocaleString("en-US", { maximumFractionDigits: 2 });
+              return `${ctx.dataset.label}: ${dollar} (${pct})`;
+            },
+            afterBody: (items) => {
+              // Footer line for the SPY series so users understand the
+              // dollar value isn't the real SPY share price.
+              if (items.length > 1) {
+                return ["", "Both rebased to portfolio start value"];
+              }
+              return [];
+            },
           },
         },
       },

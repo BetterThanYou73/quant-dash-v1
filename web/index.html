@@ -5,7 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>QuantDash — Quantitative Dashboard</title>
 <link href="https://fonts.googleapis.com/css2?family=Space+Mono:ital,wght@0,400;0,700;1,400&family=Syne:wght@400;600;700;800&display=swap" rel="stylesheet">
-<link rel="stylesheet" href="styles.css?v=19">
+<link rel="stylesheet" href="styles.css?v=20">
 </head>
 <body>
 
@@ -348,6 +348,7 @@
         <div class="pf-card-title">Holdings</div>
         <span class="pf-badge pf-badge-g" id="pf-holdings-count">—</span>
         <span class="pf-badge pf-badge-b">LIVE PRICES</span>
+        <button class="pill ghost pf-refresh-btn" id="pf-refresh" title="Re-fetch prices for all positions (helpful after adding ETFs/foreign tickers)">Refresh</button>
       </div>
       <div id="pf-table" class="pf-card-body"></div>
     </div>
@@ -473,6 +474,6 @@
 
 <!-- Order matters: config first (sets API_BASE), then app reads window.QD_CONFIG -->
 <script src="config.js"></script>
-<script src="app.js?v=19"></script>
+<script src="app.js?v=20"></script>
 </body>
 </html>
