@@ -351,13 +351,36 @@ nav {
 .controls-row label { display: flex; flex-direction: column; gap: 3px; }
 
 /* CORRELATION heatmap — pure CSS grid, no plugin needed */
-.heatmap-wrap { overflow-x: auto; padding-top: 4px; }
+.heatmap-wrap {
+  overflow-x: auto;
+  padding-top: 4px;
+  /* Stable scroll gutter avoids the layout jump when the bar appears.
+     Only takes effect when the bar is actually rendered (Firefox / Chromium 94+). */
+  scrollbar-gutter: stable;
+}
+/* Dark, slim scrollbar that matches the theme. Without this the browser's
+   chunky default bar dominates the small heatmap card. */
+.heatmap-wrap::-webkit-scrollbar { height: 6px; }
+.heatmap-wrap::-webkit-scrollbar-track {
+  background: transparent;
+}
+.heatmap-wrap::-webkit-scrollbar-thumb {
+  background: rgba(0, 255, 170, 0.18);
+  border-radius: 3px;
+}
+.heatmap-wrap::-webkit-scrollbar-thumb:hover {
+  background: rgba(0, 255, 170, 0.35);
+}
+/* Firefox equivalent */
+.heatmap-wrap { scrollbar-width: thin; scrollbar-color: rgba(0,255,170,0.25) transparent; }
+
 .heatmap-grid {
   display: grid;
   gap: 1px;
   font-family: 'Space Mono', monospace;
   font-size: 9px;
-  min-width: 320px;
+  /* Drop min-width entirely — let the grid size naturally to its
+     contents so we don't force a scrollbar when the card has room. */
 }
 .heatmap-cell {
   text-align: center;
@@ -488,7 +511,22 @@ nav {
 .macro-tile .mt-chgs .v.flat { color: var(--text3); }
 
 /* NEWS card */
-.news-body { padding: 4px 0 6px; max-height: 260px; overflow-y: auto; }
+.news-body { padding: 4px 0 6px; max-height: 260px; overflow-y: auto; scrollbar-gutter: stable; }
+/* Themed slim scrollbars — applied to any scroll container that opts in
+   via these class names. Keeps the chunky default OS bar from overwhelming
+   the small dark cards. */
+.news-body::-webkit-scrollbar,
+.modal-body::-webkit-scrollbar { width: 6px; height: 6px; }
+.news-body::-webkit-scrollbar-track,
+.modal-body::-webkit-scrollbar-track { background: transparent; }
+.news-body::-webkit-scrollbar-thumb,
+.modal-body::-webkit-scrollbar-thumb {
+  background: rgba(0,255,170,0.18);
+  border-radius: 3px;
+}
+.news-body::-webkit-scrollbar-thumb:hover,
+.modal-body::-webkit-scrollbar-thumb:hover { background: rgba(0,255,170,0.35); }
+.news-body, .modal-body { scrollbar-width: thin; scrollbar-color: rgba(0,255,170,0.25) transparent; }
 .news-item {
   padding: 9px 16px;
   border-bottom: 1px solid rgba(0,255,170,0.04);
