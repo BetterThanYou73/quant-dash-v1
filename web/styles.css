@@ -372,6 +372,15 @@ nav {
   font-weight: 700;
   letter-spacing: 0.5px;
 }
+/* Pin the left column of row labels so they stay visible while the
+   user scrolls the heatmap horizontally. Without this the labels
+   slide off-screen and you can't tell which row is which. */
+.heatmap-cell.label-row {
+  position: sticky;
+  left: 0;
+  background: var(--bg2);
+  z-index: 1;
+}
 .heatmap-cell.diag { background: var(--bg2); color: var(--text3); }
 .heatmap-legend {
   display: flex; align-items: center; gap: 8px;

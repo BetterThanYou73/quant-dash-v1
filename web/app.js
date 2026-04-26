@@ -790,7 +790,7 @@ function renderCorrelationMatrix(payload) {
 
   body.innerHTML = `
     <div class="heatmap-wrap">
-      <div class="heatmap-grid" style="grid-template-columns: 50px repeat(${n}, minmax(38px, 1fr))">
+      <div class="heatmap-grid" style="grid-template-columns: 46px repeat(${n}, minmax(34px, 1fr))">
         ${cells.join("")}
       </div>
       <div class="heatmap-legend">
@@ -1021,12 +1021,16 @@ async function loadNews() {
   try {
     body.innerHTML = `<div class="placeholder">Loading headlines for ${sym}…</div>`;
     const data = await apiGet(`/api/news?ticker=${encodeURIComponent(sym)}&limit=8`);
-    if (meta) meta.textContent = `${data.count} items`;
+    if (meta) meta.textContent = data.filtered ? `${data.count} items` : `${data.count} (loose)`;
     if (!data.results.length) {
       body.innerHTML = `<div class="placeholder">No recent headlines for ${sym}.</div>`;
       return;
     }
-    body.innerHTML = data.results.map(n => `
+    const note = data.filtered ? "" : `
+      <div class="placeholder" style="padding:6px 16px;font-size:9px">
+        No headlines explicitly mention ${sym}; showing related industry items.
+      </div>`;
+    body.innerHTML = note + data.results.map(n => `
       <div class="news-item">
         <a class="news-title" href="${n.link || "#"}" target="_blank" rel="noopener noreferrer">${n.title}</a>
         <div class="news-meta">
