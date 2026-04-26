@@ -510,6 +510,103 @@ nav {
 }
 .news-title:hover { color: var(--accent); }
 
+/* ------ MODAL (Screener / Portfolio overlays) ------ */
+.modal-root {
+  position: fixed; inset: 0; z-index: 1000;
+  display: flex; align-items: center; justify-content: center;
+}
+.modal-root[hidden] { display: none; }
+.modal-backdrop {
+  position: absolute; inset: 0;
+  background: rgba(0, 0, 0, 0.65);
+  backdrop-filter: blur(2px);
+}
+.modal {
+  position: relative;
+  background: var(--bg2);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  width: min(960px, 92vw);
+  max-height: 86vh;
+  display: flex; flex-direction: column;
+  box-shadow: 0 16px 48px rgba(0, 0, 0, 0.6);
+}
+.modal-header {
+  display: flex; align-items: center; gap: 12px;
+  padding: 14px 18px;
+  border-bottom: 1px solid var(--border);
+}
+.modal-title {
+  font-size: 13px; letter-spacing: 0.5px; text-transform: uppercase;
+  color: var(--text); font-weight: 700;
+}
+.modal-close {
+  margin-left: auto;
+  background: transparent; border: 1px solid var(--border);
+  color: var(--text2); font-size: 18px; line-height: 1;
+  width: 28px; height: 28px; border-radius: 4px;
+  cursor: pointer;
+}
+.modal-close:hover { color: var(--text); border-color: var(--accent); }
+.modal-body {
+  padding: 16px 18px;
+  overflow-y: auto;
+  font-family: 'Space Mono', monospace;
+  font-size: 11px;
+  color: var(--text2);
+}
+
+/* Reusable table inside modals (Screener results, Portfolio holdings). */
+.modal-table { width: 100%; border-collapse: collapse; font-size: 11px; }
+.modal-table th, .modal-table td {
+  padding: 7px 8px; text-align: right;
+  border-bottom: 1px solid rgba(0,255,170,0.05);
+}
+.modal-table th {
+  text-transform: uppercase; letter-spacing: 0.5px;
+  color: var(--text3); font-size: 9px; font-weight: 700;
+  background: var(--bg3); position: sticky; top: 0; z-index: 1;
+}
+.modal-table th:first-child, .modal-table td:first-child { text-align: left; }
+.modal-table tbody tr:hover { background: rgba(0,255,170,0.04); }
+.modal-table .pos { color: var(--success); }
+.modal-table .neg { color: var(--danger); }
+
+.modal-controls {
+  display: flex; flex-wrap: wrap; gap: 10px; margin-bottom: 12px;
+  align-items: end;
+}
+.modal-controls label {
+  display: flex; flex-direction: column; gap: 3px;
+  font-size: 9px; color: var(--text3); letter-spacing: 0.5px; text-transform: uppercase;
+}
+.modal-controls .field { width: 110px; }
+
+/* Portfolio summary cards. */
+.pf-summary {
+  display: grid; grid-template-columns: repeat(4, 1fr); gap: 10px;
+  margin-bottom: 14px;
+}
+.pf-summary .card {
+  background: rgba(0,0,0,0.30);
+  border: 1px solid var(--border);
+  border-radius: 4px; padding: 10px 12px;
+}
+.pf-summary .card .lbl { font-size: 9px; color: var(--text3); text-transform: uppercase; letter-spacing: 0.5px; }
+.pf-summary .card .val { font-size: 16px; color: var(--text); font-weight: 700; margin-top: 3px; }
+.pf-summary .card .sub { font-size: 10px; margin-top: 2px; }
+.pf-summary .card .sub.pos { color: var(--success); }
+.pf-summary .card .sub.neg { color: var(--danger); }
+
+.pf-actions { display: flex; gap: 8px; align-items: end; flex-wrap: wrap; }
+.pf-disclaimer {
+  margin-top: 12px; padding: 8px 10px;
+  background: rgba(255,200,0,0.06);
+  border: 1px solid rgba(255,200,0,0.2);
+  border-radius: 4px;
+  font-size: 10px; color: var(--text3); line-height: 1.5;
+}
+
 /* Responsive */
 @media (max-width: 1100px) {
   .stat-strip { grid-template-columns: repeat(3,1fr); }

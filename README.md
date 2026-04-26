@@ -52,6 +52,51 @@ If you skip step 3, you can refresh data manually from the sidebar via **Refresh
 - **Phase 1 (in progress):** replace Streamlit with a FastAPI backend serving JSON, and a static HTML/CSS/JS frontend hostable on GitHub Pages
 - **Phase 2:** expose all dashboard data via a versioned REST API and pipe it into an LLM advisor (Claude / GPT / Gemini) that incorporates external signals (news, macro, weather, etc.)
 
+## Hosting (Phase 1)
+
+The backend (FastAPI/uvicorn) and the static frontend are deployed separately:
+
+- **Frontend** (`web/`) → any static host: GitHub Pages, Cloudflare Pages, Netlify. No build step. Update `web/config.js` so `API_BASE` points at the deployed backend URL.
+- **Backend** (`backend/` + `core/`) → a small Python container on Render / Fly.io / Railway. The cache pickle is rebuilt by `core/workers.py`; on free tiers run it as a scheduled job (e.g. daily). For dev: `uvicorn backend.main:app --reload`. For prod: `uvicorn backend.main:app --host 0.0.0.0 --port $PORT --workers 2`.
+- **CORS** is currently `*` (read-only, no auth). When Phase 2 ships auth, lock origins to the deployed frontend domain.
+- **GZip middleware** (`fastapi.middleware.gzip`) is enabled with a 1 KB threshold — JSON payloads compress ~75-85%, which matters on free-tier bandwidth caps.
+- **Frontend refresh scheduler** (`web/app.js`) batches all polling into one heartbeat, runs single-flight per task, and pauses when the browser tab is hidden — drops idle API calls to zero.
+- **Health probe**: `GET /api/health` returns 200 when the process is up; point the host's liveness check there.
+
+## Phase 2 Plan — Postgres + Portfolio Accounts
+
+The localStorage portfolio in Phase 1 is a deliberate placeholder. Phase 2 replaces it with a real backend so positions sync across devices and feed the LLM advisor.
+
+**Stack additions**
+- **PostgreSQL** for relational data (users, portfolios, positions, snapshots, watchlists). Hosted on Supabase / Neon / Railway free tier.
+- **SQLAlchemy 2.x + Alembic** for ORM and migrations.
+- **Auth**: GitHub OAuth via `authlib`, JWT session cookies. No passwords stored.
+
+**Schema sketch**
+```
+users           (id, email, github_id, created_at)
+portfolios      (id, user_id, name, base_ccy, created_at)
+positions       (id, portfolio_id, ticker, shares, avg_cost, opened_at)
+transactions    (id, position_id, kind {buy,sell,div}, qty, price, ts)
+watchlists      (id, user_id, name, symbols jsonb)
+snapshots       (id, portfolio_id, ts, market_value, cost_basis, day_pnl)  -- daily MV history
+```
+
+**Migration path from Phase 1**
+- Both `localStorage` keys (`qd.watchlist.v1`, `qd.portfolio.v1`) keep their `v1` suffix on purpose. On first sign-in, the frontend POSTs the local payload to `/api/portfolio/import` and the server writes initial rows. The `v1` data is left in place until the import succeeds, then cleared.
+
+**New API surface (proposed)**
+```
+GET    /api/me                         → current user
+GET    /api/portfolios                 → list user's portfolios
+POST   /api/portfolios                 → create
+GET    /api/portfolios/{id}            → positions + summary (server-side valuation)
+POST   /api/portfolios/{id}/positions  → add/edit
+DELETE /api/portfolios/{id}/positions/{ticker}
+GET    /api/portfolios/{id}/history    → daily snapshots for charting
+```
+
+
 ## Disclaimer
 This project is **not financial advice**. It is for research and education only. Any investment decision is your responsibility.
 

@@ -14,6 +14,7 @@ from pathlib import Path
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.middleware.gzip import GZipMiddleware
 
 # We import from `core` — the pure-Python layer with no web/UI dependencies.
 # This is the seam that lets us swap Streamlit out without rewriting the math.
@@ -29,6 +30,7 @@ from backend import routes_sectors
 from backend import routes_regime
 from backend import routes_macro
 from backend import routes_news
+from backend import routes_screener
 
 
 # --- App instance ---------------------------------------------------------
@@ -56,6 +58,12 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+# GZip compresses JSON responses larger than ~1KB. Our biggest payloads
+# (signals + screener + correlation) are 5–80 KB each — gzip cuts them by
+# ~75-85% which matters a lot when we're hosted on a free tier with
+# bandwidth caps and serving global users with high RTT.
+app.add_middleware(GZipMiddleware, minimum_size=1024)
+
 
 # --- Routes ---------------------------------------------------------------
 
@@ -69,6 +77,7 @@ app.include_router(routes_sectors.router)
 app.include_router(routes_regime.router)
 app.include_router(routes_macro.router)
 app.include_router(routes_news.router)
+app.include_router(routes_screener.router)
 
 
 @app.get("/api/health")

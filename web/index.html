@@ -5,7 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>QuantDash — Quantitative Dashboard</title>
 <link href="https://fonts.googleapis.com/css2?family=Space+Mono:ital,wght@0,400;0,700;1,400&family=Syne:wght@400;600;700;800&display=swap" rel="stylesheet">
-<link rel="stylesheet" href="styles.css?v=6">
+<link rel="stylesheet" href="styles.css?v=7">
 </head>
 <body>
 
@@ -22,10 +22,10 @@
   </div>
   <div class="nav-right">
     <div class="status-dot dead" id="status-dot" title="Connecting to API..."></div>
-    <button class="pill active">Dashboard</button>
-    <button class="pill">Screener</button>
-    <button class="pill">Portfolio</button>
-    <button class="pill">API Docs</button>
+    <button class="pill active" id="nav-dashboard">Dashboard</button>
+    <button class="pill" id="nav-screener">Screener</button>
+    <button class="pill" id="nav-portfolio">Portfolio</button>
+    <button class="pill" id="nav-docs">API Docs</button>
   </div>
 </nav>
 
@@ -249,12 +249,25 @@
   </div>
 </div>
 
+<!-- MODAL ROOT — overlay container for Screener / Portfolio panels.
+     Hidden by default; app.js toggles `.open` and swaps body content. -->
+<div id="modal-root" class="modal-root" hidden>
+  <div class="modal-backdrop" data-close></div>
+  <div class="modal" role="dialog" aria-modal="true" aria-labelledby="modal-title">
+    <div class="modal-header">
+      <div class="modal-title" id="modal-title">—</div>
+      <button class="modal-close" data-close aria-label="Close">×</button>
+    </div>
+    <div class="modal-body" id="modal-body"></div>
+  </div>
+</div>
+
 <!-- Chart.js from CDN — only JS dependency. UMD build, no module loader needed.
      Pinned to v4.4.x. If CDN fails, charts won't render but the rest of the page still works. -->
 <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.7/dist/chart.umd.min.js"></script>
 
 <!-- Order matters: config first (sets API_BASE), then app reads window.QD_CONFIG -->
 <script src="config.js"></script>
-<script src="app.js?v=6"></script>
+<script src="app.js?v=7"></script>
 </body>
 </html>

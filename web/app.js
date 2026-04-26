@@ -1134,7 +1134,294 @@ async function loadNews() {
 }
 
 // =========================================================================
-// 13. BOOT
+// 13. NAV BUTTONS — Modal, Screener, Portfolio, API Docs
+// =========================================================================
+//
+// Phase 1 keeps the Portfolio fully browser-local (localStorage). Phase 2
+// will swap localStorage for a Postgres-backed `/api/portfolio` resource
+// behind auth. We've kept the read/write surface tiny on purpose so that
+// migration is a one-file change.
+
+// ----- Modal helpers -----
+const Modal = (() => {
+  const root = () => document.getElementById("modal-root");
+  const titleEl = () => document.getElementById("modal-title");
+  const bodyEl = () => document.getElementById("modal-body");
+
+  function open(title, html) {
+    titleEl().textContent = title;
+    bodyEl().innerHTML = html;
+    root().hidden = false;
+    document.addEventListener("keydown", _esc);
+  }
+  function close() {
+    root().hidden = true;
+    bodyEl().innerHTML = "";
+    document.removeEventListener("keydown", _esc);
+  }
+  function _esc(e) { if (e.key === "Escape") close(); }
+
+  // Wire backdrop + close button once.
+  function bind() {
+    root().addEventListener("click", (e) => {
+      if (e.target.dataset.close !== undefined) close();
+    });
+  }
+  return { open, close, bind, body: bodyEl };
+})();
+
+// ----- Screener -----
+async function openScreener() {
+  Modal.open("Screener — Full Universe", `
+    <div class="modal-controls">
+      <label>Min Z
+        <input id="scr-minz" class="field" type="number" step="0.1" value="0.5">
+      </label>
+      <label>Signal
+        <select id="scr-signal" class="field">
+          <option value="">Any</option>
+          <option value="STRONG_BUY">Strong Buy</option>
+          <option value="BUY" selected>Buy+</option>
+          <option value="STRONG_BUY,BUY">Buy or Strong Buy</option>
+          <option value="HOLD">Hold</option>
+          <option value="AVOID">Avoid</option>
+        </select>
+      </label>
+      <label>Sector
+        <select id="scr-sector" class="field">
+          <option value="">Any</option>
+        </select>
+      </label>
+      <label>Limit
+        <input id="scr-limit" class="field" type="number" min="5" max="200" value="50">
+      </label>
+      <button id="scr-run" class="pill cta" style="padding:5px 14px">Run</button>
+    </div>
+    <div id="scr-results"><div class="placeholder">Adjust filters and hit Run.</div></div>
+  `);
+
+  // Populate sector dropdown from the sectors endpoint we already have.
+  try {
+    const sec = await apiGet("/api/sectors");
+    const sel = document.getElementById("scr-sector");
+    for (const s of sec.results) {
+      const opt = document.createElement("option");
+      opt.value = s.Sector; opt.textContent = s.Sector;
+      sel.appendChild(opt);
+    }
+  } catch (_) { /* non-fatal */ }
+
+  document.getElementById("scr-run").addEventListener("click", _runScreener);
+  _runScreener();  // initial run
+}
+
+async function _runScreener() {
+  const out = document.getElementById("scr-results");
+  if (!out) return;
+  const minz = document.getElementById("scr-minz").value || 0;
+  const sig = document.getElementById("scr-signal").value;
+  const sec = document.getElementById("scr-sector").value;
+  const lim = document.getElementById("scr-limit").value || 50;
+  const params = new URLSearchParams({ min_z: minz, limit: lim });
+  if (sig) params.set("signal", sig);
+  if (sec) params.set("sector", sec);
+  out.innerHTML = `<div class="placeholder">Screening…</div>`;
+  try {
+    const data = await apiGet(`/api/screener?${params.toString()}`);
+    if (!data.results.length) {
+      out.innerHTML = `<div class="placeholder">No tickers match those filters.</div>`;
+      return;
+    }
+    const rows = data.results.map(r => `
+      <tr>
+        <td><strong>${r.Ticker}</strong> <span style="color:var(--text3)">${r.Name || ""}</span></td>
+        <td>${r.Sector || "—"}</td>
+        <td>${r.Composite_Z >= 0 ? "+" : ""}${r.Composite_Z}</td>
+        <td>${r.Composite_Percentile}%</td>
+        <td>${r.Signal}</td>
+        <td class="${(r.Momentum_12_1||0)>=0?'pos':'neg'}">${fmtPct(r.Momentum_12_1)}</td>
+        <td>${fmtPrice(r.Price)}</td>
+      </tr>`).join("");
+    out.innerHTML = `
+      <div style="color:var(--text3);font-size:10px;margin-bottom:6px">
+        ${data.count} matches · as of ${data.as_of_utc || "—"}
+      </div>
+      <table class="modal-table">
+        <thead><tr>
+          <th style="text-align:left">Ticker</th><th style="text-align:left">Sector</th>
+          <th>Composite Z</th><th>Pctl</th><th>Signal</th><th>Mom 12-1</th><th>Price</th>
+        </tr></thead>
+        <tbody>${rows}</tbody>
+      </table>`;
+  } catch (e) {
+    out.innerHTML = `<div class="placeholder err">${e.message}</div>`;
+  }
+}
+
+// ----- Portfolio (localStorage-backed) -----
+//
+// Schema in localStorage (key: "qd.portfolio.v1"):
+//   [{ ticker: "AAPL", shares: 10, avg_cost: 175.20 }, ...]
+//
+// The version suffix lets Phase 2 (Postgres) read+migrate v1 records the
+// first time the user signs in. Same strategy we used for the watchlist.
+
+const PORTFOLIO_KEY = "qd.portfolio.v1";
+
+const Portfolio = {
+  load() {
+    try { return JSON.parse(localStorage.getItem(PORTFOLIO_KEY) || "[]"); }
+    catch (_) { return []; }
+  },
+  save(items) { localStorage.setItem(PORTFOLIO_KEY, JSON.stringify(items)); },
+  add(ticker, shares, avgCost) {
+    const items = Portfolio.load();
+    const sym = ticker.toUpperCase().trim();
+    if (!sym || !(shares > 0) || !(avgCost > 0)) return false;
+    const existing = items.find(p => p.ticker === sym);
+    if (existing) {
+      // Weighted-average cost when adding to an existing position
+      // (avoids accidental cost-basis erasure if user re-adds the same name).
+      const totalShares = existing.shares + shares;
+      existing.avg_cost = (existing.shares * existing.avg_cost + shares * avgCost) / totalShares;
+      existing.shares = totalShares;
+    } else {
+      items.push({ ticker: sym, shares, avg_cost: avgCost });
+    }
+    Portfolio.save(items);
+    return true;
+  },
+  remove(ticker) {
+    const items = Portfolio.load().filter(p => p.ticker !== ticker.toUpperCase());
+    Portfolio.save(items);
+  },
+};
+
+async function openPortfolio() {
+  Modal.open("Portfolio — Browser-Local", `
+    <div class="modal-controls">
+      <label>Ticker <input id="pf-ticker" class="field" maxlength="6" placeholder="AAPL"></label>
+      <label>Shares <input id="pf-shares" class="field" type="number" step="0.01" min="0" placeholder="10"></label>
+      <label>Avg Cost <input id="pf-cost" class="field" type="number" step="0.01" min="0" placeholder="175.20"></label>
+      <button id="pf-add" class="pill cta" style="padding:5px 14px">Add Position</button>
+    </div>
+    <div id="pf-summary" class="pf-summary"></div>
+    <div id="pf-table"></div>
+    <div class="pf-disclaimer">
+      Positions are stored only in this browser (localStorage); they don't leave your machine.
+      Prices come from the cached market data and may be up to a day stale.
+      Phase 2 will move this to a Postgres-backed multi-device account.
+    </div>
+  `);
+  document.getElementById("pf-add").addEventListener("click", _addPortfolioPosition);
+  await _renderPortfolio();
+}
+
+function _addPortfolioPosition() {
+  const t = document.getElementById("pf-ticker").value;
+  const s = parseFloat(document.getElementById("pf-shares").value);
+  const c = parseFloat(document.getElementById("pf-cost").value);
+  if (!Portfolio.add(t, s, c)) {
+    alert("Need a ticker, positive shares, and positive avg cost.");
+    return;
+  }
+  document.getElementById("pf-ticker").value = "";
+  document.getElementById("pf-shares").value = "";
+  document.getElementById("pf-cost").value = "";
+  _renderPortfolio();
+}
+
+async function _renderPortfolio() {
+  const positions = Portfolio.load();
+  const tableEl = document.getElementById("pf-table");
+  const sumEl = document.getElementById("pf-summary");
+  if (!positions.length) {
+    tableEl.innerHTML = `<div class="placeholder">No positions yet. Add one above.</div>`;
+    sumEl.innerHTML = "";
+    return;
+  }
+
+  // Single batch quote for all positions — keeps it to one round-trip
+  // even with 50 holdings.
+  let quotes = {};
+  try {
+    const data = await apiGet(`/api/quotes?tickers=${positions.map(p => p.ticker).join(",")}`);
+    for (const q of data.results) quotes[q.ticker] = q;
+  } catch (e) {
+    tableEl.innerHTML = `<div class="placeholder err">Quote fetch failed: ${e.message}</div>`;
+    return;
+  }
+
+  let totalValue = 0, totalCost = 0, totalDayChange = 0;
+  const rows = positions.map(p => {
+    const q = quotes[p.ticker];
+    const price = q ? q.price : null;
+    const dayPct = q ? q.change_pct : null;
+    const value = price != null ? price * p.shares : null;
+    const cost = p.avg_cost * p.shares;
+    const upl = value != null ? value - cost : null;
+    const uplPct = (upl != null && cost) ? upl / cost : null;
+    const dayDollar = (price != null && dayPct != null) ? value * dayPct : null;
+    if (value != null) { totalValue += value; totalCost += cost; }
+    if (dayDollar != null) totalDayChange += dayDollar;
+    return `
+      <tr>
+        <td><strong>${p.ticker}</strong></td>
+        <td>${p.shares.toLocaleString("en-US", {maximumFractionDigits:4})}</td>
+        <td>${fmtPrice(p.avg_cost)}</td>
+        <td>${fmtPrice(price)}</td>
+        <td class="${(dayPct||0)>=0?'pos':'neg'}">${fmtPct(dayPct)}</td>
+        <td>${fmtPrice(value)}</td>
+        <td class="${(upl||0)>=0?'pos':'neg'}">${fmtPrice(upl)}</td>
+        <td class="${(uplPct||0)>=0?'pos':'neg'}">${fmtPct(uplPct)}</td>
+        <td><button class="pill" style="padding:3px 8px;font-size:9px" data-rm="${p.ticker}">Remove</button></td>
+      </tr>`;
+  }).join("");
+
+  const totalUpl = totalValue - totalCost;
+  const totalUplPct = totalCost ? totalUpl / totalCost : null;
+  sumEl.innerHTML = `
+    <div class="card"><div class="lbl">Market Value</div><div class="val">${fmtPrice(totalValue)}</div></div>
+    <div class="card"><div class="lbl">Cost Basis</div><div class="val">${fmtPrice(totalCost)}</div></div>
+    <div class="card"><div class="lbl">Unrealized P&amp;L</div>
+      <div class="val ${totalUpl>=0?'pos':'neg'}" style="color:${totalUpl>=0?'var(--success)':'var(--danger)'}">${fmtPrice(totalUpl)}</div>
+      <div class="sub ${totalUpl>=0?'pos':'neg'}">${fmtPct(totalUplPct)}</div>
+    </div>
+    <div class="card"><div class="lbl">Today</div>
+      <div class="val" style="color:${totalDayChange>=0?'var(--success)':'var(--danger)'}">${fmtPrice(totalDayChange)}</div>
+    </div>`;
+  tableEl.innerHTML = `
+    <table class="modal-table">
+      <thead><tr>
+        <th style="text-align:left">Ticker</th><th>Shares</th><th>Avg Cost</th>
+        <th>Price</th><th>Day %</th><th>Value</th><th>Unrl P&amp;L</th><th>Unrl %</th><th></th>
+      </tr></thead>
+      <tbody>${rows}</tbody>
+    </table>`;
+  // Bind remove buttons.
+  tableEl.querySelectorAll("button[data-rm]").forEach(btn => {
+    btn.addEventListener("click", () => {
+      Portfolio.remove(btn.dataset.rm);
+      _renderPortfolio();
+    });
+  });
+}
+
+// ----- Bind nav -----
+function bindNav() {
+  Modal.bind();
+  document.getElementById("nav-screener")?.addEventListener("click", openScreener);
+  document.getElementById("nav-portfolio")?.addEventListener("click", openPortfolio);
+  document.getElementById("nav-docs")?.addEventListener("click", () => {
+    // FastAPI auto-mounts Swagger UI at /docs. Open in a new tab so the
+    // dashboard stays where the user left it.
+    window.open(`${API}/docs`, "_blank", "noopener,noreferrer");
+  });
+  document.getElementById("nav-dashboard")?.addEventListener("click", Modal.close);
+}
+
+// =========================================================================
+// 14. BOOT
 // =========================================================================
 
 document.addEventListener("DOMContentLoaded", () => {
@@ -1146,6 +1433,7 @@ document.addEventListener("DOMContentLoaded", () => {
 
   bindPriceChartTabs();
   bindPairs();
+  bindNav();
 
   // One-shot at boot: pairs runs only when user clicks Run.
   loadPairs();
