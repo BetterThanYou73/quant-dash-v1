@@ -834,7 +834,7 @@ nav {
 @media (max-width: 1400px) { .pf-stat-strip { grid-template-columns: repeat(4, 1fr); } }
 @media (max-width: 800px)  { .pf-stat-strip { grid-template-columns: repeat(2, 1fr); } }
 
-/* Generic portfolio card — softer than .stat-card, designed to host larger content. */
+/* Generic portfolio card ï¿½ softer than .stat-card, designed to host larger content. */
 .pf-card {
   background: rgba(0,0,0,0.30);
   border: 1px solid var(--border);
@@ -854,7 +854,7 @@ nav {
 }
 .pf-card-body { padding: 12px 16px; }
 
-/* Mini badges — same vibe as dashboard .card-badge but more compact. */
+/* Mini badges ï¿½ same vibe as dashboard .card-badge but more compact. */
 .pf-badge { padding: 3px 9px; border-radius: 999px; font-size: 9px; letter-spacing: 0.5px; white-space: nowrap; font-family: 'Space Mono', monospace; }
 .pf-badge-g { background: rgba(0,255,170,0.08); color: var(--success); border: 1px solid rgba(0,255,170,0.18); }
 .pf-badge-b { background: rgba(0,207,255,0.08); color: var(--accent2, #00cfff); border: 1px solid rgba(0,207,255,0.18); }
@@ -870,17 +870,22 @@ nav {
   .pf-row-2, .pf-row-2-1 { grid-template-columns: 1fr; }
 }
 
-/* Holdings table — overrides the global .modal-table for richer in-row content. */
-.pf-holdings-table { width: 100%; border-collapse: collapse; font-size: 11px; }
+/* Holdings table â€” overrides the global .modal-table for richer in-row content.
+   #pf-table is the scroll container so the table can overflow horizontally
+   on narrow widths instead of clipping the action buttons off the card edge. */
+#pf-table { overflow-x: auto; padding: 0; }
+.pf-holdings-table { width: 100%; min-width: 880px; border-collapse: collapse; font-size: 11px; }
 .pf-holdings-table th {
   font-size: 9px; letter-spacing: 1px; text-transform: uppercase;
-  color: var(--text3); padding: 8px 12px; text-align: right;
+  color: var(--text3); padding: 8px 8px; text-align: right;
   border-bottom: 1px solid var(--border); font-weight: 600;
-  background: rgba(255,255,255,0.02);
+  background: rgba(255,255,255,0.02); white-space: nowrap;
 }
-.pf-holdings-table th:first-child { text-align: left; }
-.pf-holdings-table td { padding: 9px 12px; border-bottom: 1px solid rgba(255,255,255,0.04); text-align: right; }
-.pf-holdings-table td:first-child { text-align: left; }
+.pf-holdings-table th:first-child { text-align: left; padding-left: 16px; }
+.pf-holdings-table th:last-child  { padding-right: 16px; }
+.pf-holdings-table td { padding: 9px 8px; border-bottom: 1px solid rgba(255,255,255,0.04); text-align: right; white-space: nowrap; }
+.pf-holdings-table td:first-child { text-align: left; padding-left: 16px; }
+.pf-holdings-table td:last-child  { padding-right: 16px; }
 .pf-holdings-table tr:hover td { background: rgba(0,255,170,0.025); }
 .pf-h-sym { font-weight: 700; color: var(--text); font-family: 'Space Mono', monospace; }
 .pf-h-sub { font-size: 9px; color: var(--text3); }
@@ -893,7 +898,7 @@ nav {
 .pf-act-sell { background: rgba(255,64,96,0.08); color: var(--danger); border: 1px solid rgba(255,64,96,0.18); }
 .pf-act-sell:hover { background: rgba(255,64,96,0.16); }
 
-/* Donut chart — inline SVG centered with a label in the middle. */
+/* Donut chart ï¿½ inline SVG centered with a label in the middle. */
 .pf-donut-wrap { display: flex; justify-content: center; padding: 18px 0 8px; position: relative; }
 .pf-donut-wrap svg { display: block; }
 .pf-donut-legend { display: grid; gap: 4px; padding: 0 16px 16px; }
@@ -904,12 +909,12 @@ nav {
 .pf-leg-pct { font-size: 10px; color: var(--text2); font-family: 'Space Mono', monospace; }
 .pf-leg-val { font-family: 'Syne', sans-serif; font-weight: 600; color: var(--text); font-size: 11px; min-width: 60px; text-align: right; }
 
-/* Sector exposure — table reused but trimmed for the new card layout. */
+/* Sector exposure ï¿½ table reused but trimmed for the new card layout. */
 #pf-sectors table { width: 100%; border-collapse: collapse; font-size: 11px; }
 #pf-sectors th { font-size: 9px; letter-spacing: 1px; text-transform: uppercase; color: var(--text3); padding: 8px 12px; text-align: left; border-bottom: 1px solid var(--border); font-weight: 600; background: rgba(255,255,255,0.02); }
 #pf-sectors td { padding: 8px 12px; border-bottom: 1px solid rgba(255,255,255,0.04); }
 
-/* Risk grid — 2x4 grid of metrics with progress fills. */
+/* Risk grid ï¿½ 2x4 grid of metrics with progress fills. */
 .pf-risk-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; padding: 14px 16px; }
 .pf-risk-item { background: rgba(255,255,255,0.025); border: 1px solid rgba(255,255,255,0.04); border-radius: 6px; padding: 10px 12px; }
 .pf-risk-item.stub { opacity: 0.55; }
@@ -919,7 +924,7 @@ nav {
 .pf-risk-fill { height: 100%; border-radius: 3px; transition: width 400ms ease; }
 .pf-risk-desc { font-size: 9px; color: var(--text3); line-height: 1.4; }
 
-/* Strategy cards — visual stubs, not interactive yet. */
+/* Strategy cards ï¿½ visual stubs, not interactive yet. */
 .pf-strat-grid { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 10px; padding: 14px 16px; }
 @media (max-width: 900px) { .pf-strat-grid { grid-template-columns: 1fr 1fr; } }
 .pf-strat-card { background: rgba(255,255,255,0.025); border: 1px solid rgba(255,255,255,0.04); border-radius: 6px; padding: 12px; transition: border-color .2s, transform .15s; cursor: not-allowed; opacity: 0.8; }
@@ -928,7 +933,7 @@ nav {
 .pf-strat-name { font-family: 'Syne', sans-serif; font-size: 12px; font-weight: 700; color: var(--text); margin-bottom: 3px; }
 .pf-strat-desc { font-size: 10px; color: var(--text2); line-height: 1.4; }
 
-/* Stub cards — for advisor / pairs / calculator placeholders. */
+/* Stub cards ï¿½ for advisor / pairs / calculator placeholders. */
 .pf-stub { margin-top: 14px; }
 .pf-stub-body { display: flex; align-items: center; gap: 18px; padding: 22px 22px; }
 .pf-stub-icon { font-size: 38px; flex-shrink: 0; opacity: 0.7; }
