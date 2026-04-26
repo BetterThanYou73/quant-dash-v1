@@ -77,6 +77,99 @@ function destroyChart(key) {
 }
 
 // =========================================================================
+// 1b. REFRESH SCHEDULER — single-flight, visibility-aware, per-task TTL
+// =========================================================================
+//
+// Borrows three OS-style ideas:
+//   - Cooperative scheduling: each "task" declares a min interval; the loop
+//     ticks at a coarse 5s heartbeat and only runs tasks whose deadline has
+//     passed. (Avoids hammering setInterval per resource and keeps the
+//     wakeups coherent — like a tickless kernel batching timer events.)
+//   - Single-flight (mutex per key): if a task is already in flight, skip
+//     the next tick instead of stacking concurrent requests. Prevents
+//     thundering-herd when an endpoint is slow.
+//   - Process suspension: when document.hidden (tab in background), the
+//     loop is paused entirely. On resume, any task whose deadline elapsed
+//     while hidden runs once immediately, then resettles into its cadence.
+//     Saves API quota + CPU when the user isn't looking.
+//
+// Each task can also depend on a "key" derived from AppState (e.g. the
+// selected ticker). When the key changes, we run immediately AND reset the
+// deadline — so clicking a new ticker repaints news/regime instantly but
+// then continues to refresh on its normal interval, not faster.
+//
+// Tasks that should NOT auto-refresh (price chart, pairs, correlation —
+// they're either user-driven or only change on watchlist edits) stay
+// outside the scheduler and are called directly.
+
+const Scheduler = (() => {
+  const tasks = new Map();   // name -> { fn, intervalMs, keyFn, lastRun, lastKey, inflight, errors }
+  let timer = null;
+  const HEARTBEAT_MS = 5000; // coarse tick — enough granularity for human dashboards
+
+  function register(name, fn, intervalMs, opts = {}) {
+    tasks.set(name, {
+      fn,
+      intervalMs,
+      keyFn: opts.keyFn || (() => null),
+      lastRun: 0,
+      lastKey: undefined,
+      inflight: false,
+      errors: 0,
+    });
+  }
+
+  async function _run(name) {
+    const t = tasks.get(name);
+    if (!t || t.inflight) return;       // single-flight guard
+    t.inflight = true;
+    try {
+      await t.fn();
+      t.errors = 0;
+      t.lastRun = Date.now();
+      t.lastKey = t.keyFn();
+    } catch (e) {
+      // Exponential-ish backoff: each consecutive failure pushes lastRun
+      // forward by an extra interval (capped). Surfaced in the status dot.
+      t.errors = Math.min(t.errors + 1, 5);
+      t.lastRun = Date.now() + t.intervalMs * t.errors;
+      console.warn(`[scheduler] ${name} failed:`, e.message);
+    } finally {
+      t.inflight = false;
+    }
+  }
+
+  function _tick() {
+    if (document.hidden) return;        // pause when tab not visible
+    const now = Date.now();
+    for (const [name, t] of tasks) {
+      const curKey = t.keyFn();
+      const keyChanged = curKey !== t.lastKey;
+      const due = (now - t.lastRun) >= t.intervalMs;
+      if (keyChanged || due) _run(name);
+    }
+  }
+
+  // "Kick" a task by name: forces an immediate run if not already in flight.
+  // Used when the user picks a new ticker — we don't want them to wait for
+  // the next heartbeat for News/Regime to repaint.
+  function kick(name) { _run(name); }
+
+  function start() {
+    if (timer) return;
+    timer = setInterval(_tick, HEARTBEAT_MS);
+    // When the tab regains focus, run a tick right away so stale data
+    // refreshes immediately instead of after the next heartbeat.
+    document.addEventListener("visibilitychange", () => {
+      if (!document.hidden) _tick();
+    });
+    _tick();  // first tick right away
+  }
+
+  return { register, kick, start };
+})();
+
+// =========================================================================
 // 2. APP STATE — minimal global state, mutated only via setters below
 // =========================================================================
 
@@ -341,9 +434,14 @@ async function pickAutocomplete(item) {
 }
 
 // Fired whenever the watchlist changes. Keeps everything in sync.
+// We kick the scheduler so signals + sectors + correlation refresh
+// immediately rather than waiting for the next heartbeat. Sectors are
+// kicked too because the per-watchlist filter (enabled symbols) feeds
+// into the sector aggregation indirectly via the universe.
 function refreshDataForWatchlistChange() {
-  loadSignals();
-  loadCorrelation();
+  Scheduler.kick("signals");
+  Scheduler.kick("sectors");
+  Scheduler.kick("corr");
 }
 
 // =========================================================================
@@ -496,8 +594,10 @@ function selectTicker(ticker) {
   // Re-render the table to update the "selected" highlight without refetching.
   renderSignalsTable(AppState.lastSignals);
   loadPriceChart();
-  loadRegime();
-  loadNews();
+  // Scheduler will see the key change on its next heartbeat, but we kick
+  // explicitly so the user gets instant feedback.
+  Scheduler.kick("regime");
+  Scheduler.kick("news");
 }
 
 // =========================================================================
@@ -566,8 +666,8 @@ async function loadSignals() {
     renderSignalsTable(data.results);
     renderStatStrip(data);
     loadPriceChart();
-    loadRegime();
-    loadNews();
+    // Regime + News follow the selected ticker via Scheduler key-change
+    // detection, so we don't call them directly here.
   } catch (e) {
     document.getElementById("signals-body").innerHTML =
       `<div class="placeholder err">Failed to load signals: ${e.message}</div>`;
@@ -1047,12 +1147,31 @@ document.addEventListener("DOMContentLoaded", () => {
   bindPriceChartTabs();
   bindPairs();
 
-  pingHealth();
-  loadTickerBar();
-  loadSignals();          // → loads price chart + regime + news for top ticker
-  loadCorrelation();
-  loadPairs();            // initial run with default KO/PEP
-  loadSectors();
-  loadRegime();           // defaults to SPY until a ticker is selected
-  loadMacro();
+  // One-shot at boot: pairs runs only when user clicks Run.
+  loadPairs();
+
+  // -------- Scheduler tasks --------
+  // Cadences are tuned per-resource to balance freshness vs API cost.
+  // Picked roughly by "how often does this dataset actually change?":
+  //   ticker bar : 30s   (live quotes, cheap, user always sees it)
+  //   macro      : 60s   (market data; VIX/oil move minute-by-minute)
+  //   regime     : 120s  (SMA/EWMA shift slowly; per-ticker)
+  //   news       : 180s  (Yahoo refreshes headlines maybe every few min)
+  //   signals    : 300s  (heavy compute server-side; sectors derived from same)
+  //   sectors    : 300s  (recomputed alongside signals on the same cadence)
+  //   health     : 30s   (cheap heartbeat to keep the status dot honest)
+  //
+  // keyFn returns null for tasks that don't depend on selected ticker.
+  // For per-ticker tasks (news/regime), changing the key forces an
+  // immediate refresh on the next heartbeat AND on Scheduler.kick().
+  const tickerKey = () => AppState.selectedTicker;
+  Scheduler.register("health",   pingHealth,      30_000);
+  Scheduler.register("ticker",   loadTickerBar,   30_000);
+  Scheduler.register("signals",  loadSignals,    300_000);
+  Scheduler.register("sectors",  loadSectors,    300_000);
+  Scheduler.register("macro",    loadMacro,       60_000);
+  Scheduler.register("corr",     loadCorrelation, 600_000);
+  Scheduler.register("regime",   loadRegime,     120_000, { keyFn: tickerKey });
+  Scheduler.register("news",     loadNews,       180_000, { keyFn: tickerKey });
+  Scheduler.start();
 });
