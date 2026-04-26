@@ -29,6 +29,8 @@ import argparse
 import time
 from datetime import datetime
 
+import pandas as pd
+
 import core.data_engine as de
 
 
@@ -68,22 +70,54 @@ def build_universe(task: str = "daily"):
 
 
 def refresh_once(task: str, period: str, batch_size: int):
-    """Run one refresh cycle. Returns True on success."""
+    """Run one refresh cycle. Returns True on success.
+
+    Behavior by task:
+      daily    → full overwrite of the cache (slow, ~25 s for 500 tickers)
+      intraday → fetch only the macro/regime tickers and MERGE into the
+                 existing cache so the daily S&P 500 columns survive.
+                 If no daily cache exists yet, this falls back to a full
+                 overwrite of just the intraday universe.
+    """
     universe = build_universe(task)
     now = datetime.utcnow().isoformat()
     print(f"[{now}] task={task} universe_size={len(universe)} period={period}")
 
-    data, cache_ts = de.refresh_market_data_cache_batched(
-        universe, period=period, batch_size=batch_size
-    )
-    if data.empty:
+    fresh = de.fetch_stock_data_batched(universe, period=period, batch_size=batch_size)
+    if fresh.empty:
         print(f"[{now}] refresh failed: no data returned from any batch")
         return False
 
-    print(
-        f"[{now}] cache refreshed: rows={data.shape[0]} cols={data.shape[1]} "
-        f"universe_requested={len(universe)} ts={cache_ts}"
-    )
+    if task == "intraday":
+        # Merge into the existing cache so we don't blow away the full
+        # S&P 500 daily columns. We refresh the intraday symbols' columns
+        # in place and keep everything else untouched.
+        existing, _ = de.load_cached_market_data()
+        if existing is not None and not existing.empty:
+            # Drop any columns in `existing` whose ticker we just refreshed,
+            # then concat the fresh data on the column axis. yfinance
+            # returns a (field, ticker) MultiIndex on columns when given >1
+            # ticker; handle both single- and multi-ticker shapes.
+            try:
+                fresh_tickers = set(universe)
+                if isinstance(existing.columns, pd.MultiIndex):
+                    keep_mask = [tkr not in fresh_tickers for tkr in existing.columns.get_level_values(-1)]
+                    pruned = existing.loc[:, keep_mask]
+                else:
+                    pruned = existing  # single-ticker shape; nothing to prune
+                merged = pd.concat([pruned, fresh], axis=1)
+                de.save_market_data_cache(merged)
+                cache_ts = merged.index[-1].isoformat() if len(merged.index) else now
+                print(f"[{now}] cache merged: rows={merged.shape[0]} cols={merged.shape[1]} "
+                      f"intraday_refreshed={len(universe)} ts={cache_ts}")
+                return True
+            except Exception as exc:
+                print(f"[{now}] merge failed ({exc}); falling back to overwrite")
+                # fall through to overwrite
+
+    de.save_market_data_cache(fresh)
+    print(f"[{now}] cache refreshed: rows={fresh.shape[0]} cols={fresh.shape[1]} "
+          f"universe_requested={len(universe)}")
     return True
 
 
