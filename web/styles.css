@@ -870,36 +870,29 @@ nav {
   .pf-row-2, .pf-row-2-1 { grid-template-columns: 1fr; }
 }
 
-/* Holdings table — overrides the global .modal-table for richer in-row content.
-   #pf-table is the scroll container so the table can overflow horizontally
-   on narrow widths instead of clipping the action buttons off the card edge. */
-#pf-table { overflow-x: auto; padding: 0; }
-.pf-holdings-table { width: 100%; min-width: 880px; border-collapse: separate; border-spacing: 0; font-size: 11px; }
+/* Holdings table — no horizontal scroll. We dropped the β and Signal columns
+   (signal is now a tiny badge next to the symbol; β is in the risk panel)
+   so all remaining columns fit naturally on the card. */
+#pf-table { padding: 0; }
+.pf-holdings-table { width: 100%; border-collapse: separate; border-spacing: 0; font-size: 11px; table-layout: auto; }
 .pf-holdings-table th {
   font-size: 9px; letter-spacing: 1px; text-transform: uppercase;
-  color: var(--text3); padding: 8px 8px; text-align: right;
+  color: var(--text3); padding: 8px 6px; text-align: right;
   border-bottom: 1px solid var(--border); font-weight: 600;
   background: rgba(255,255,255,0.02); white-space: nowrap;
 }
-.pf-holdings-table th:first-child { text-align: left; padding-left: 16px; }
-.pf-holdings-table th:last-child  { padding-right: 16px; }
-.pf-holdings-table td { padding: 9px 8px; border-bottom: 1px solid rgba(255,255,255,0.04); text-align: right; white-space: nowrap; }
-.pf-holdings-table td:first-child { text-align: left; padding-left: 16px; }
-.pf-holdings-table td:last-child  { padding-right: 16px; }
+.pf-holdings-table th:first-child { text-align: left; padding-left: 14px; }
+.pf-holdings-table th:last-child  { padding-right: 14px; }
+.pf-holdings-table td { padding: 8px 6px; border-bottom: 1px solid rgba(255,255,255,0.04); text-align: right; white-space: nowrap; }
+.pf-holdings-table td:first-child { text-align: left; padding-left: 14px; }
+.pf-holdings-table td:last-child  { padding-right: 14px; }
 .pf-holdings-table tr:hover td { background: rgba(0,255,170,0.025); }
 
-/* Sticky action column — keeps BUY/SELL visible even when the table
-   overflows horizontally on narrow viewports. The bg2 background
-   matches the card so it reads as part of the card edge, not floating. */
-.pf-holdings-table th:last-child,
-.pf-holdings-table td:last-child {
-  position: sticky; right: 0;
-  background: var(--bg2);
-  box-shadow: -8px 0 12px -8px rgba(0,0,0,0.55);
-  z-index: 2;
+/* On very narrow viewports allow horizontal scroll as a fallback. */
+@media (max-width: 720px) {
+  #pf-table { overflow-x: auto; }
+  .pf-holdings-table { min-width: 640px; }
 }
-.pf-holdings-table tr:hover td:last-child { background: #14201d; }
-.pf-holdings-table th:last-child { background: rgba(15,22,20,0.98); }
 
 /* Performance card \u2014 equity curve with benchmark overlay. The canvas
    needs an explicit height because Chart.js with maintainAspectRatio:false
@@ -916,8 +909,55 @@ nav {
 .pf-perf-body { padding: 12px 16px 16px; height: 260px; position: relative; }
 .pf-perf-body canvas { width: 100% !important; height: 100% !important; }
 
-.pf-h-sym { font-weight: 700; color: var(--text); font-family: 'Space Mono', monospace; }
-.pf-h-sub { font-size: 9px; color: var(--text3); }
+.pf-h-sym { font-weight: 700; color: var(--text); font-family: 'Space Mono', monospace; display: flex; align-items: center; gap: 6px; }
+.pf-h-sub { font-size: 9px; color: var(--text3); margin-top: 2px; }
+.pf-h-sigbadge {
+  font-size: 8px; padding: 1px 5px; border-radius: 2px; letter-spacing: 0.5px;
+  background: rgba(255,255,255,0.05); color: var(--text2); border: 1px solid var(--border); white-space: nowrap;
+}
+.pf-h-sigbadge.sig-strong-buy { background: rgba(0,255,170,0.15); color: var(--success); border-color: rgba(0,255,170,0.30); }
+.pf-h-sigbadge.sig-buy        { background: rgba(0,255,170,0.10); color: var(--success); border-color: rgba(0,255,170,0.20); }
+.pf-h-sigbadge.sig-hold       { background: rgba(255,204,0,0.10); color: #ffcc00;        border-color: rgba(255,204,0,0.25); }
+.pf-h-sigbadge.sig-avoid      { background: rgba(255,64,96,0.10); color: var(--danger); border-color: rgba(255,64,96,0.25); }
+.pf-h-sigbadge.sig-high-risk  { background: rgba(255,64,96,0.15); color: var(--danger); border-color: rgba(255,64,96,0.35); }
+.pf-h-wt { display: flex; align-items: center; gap: 6px; justify-content: flex-end; }
+.pf-h-wt-num { font-size: 10px; color: var(--text2); min-width: 30px; text-align: right; }
+.pf-h-bar-wrap { width: 50px; height: 4px; background: rgba(255,255,255,0.06); border-radius: 2px; overflow: hidden; display: inline-block; vertical-align: middle; }
+.pf-h-bar { height: 100%; border-radius: 2px; }
+
+/* Sell modal — custom replacement for the browser prompt(). Reuses #modal-root. */
+.sell-modal { display: flex; flex-direction: column; gap: 14px; padding: 6px 2px 4px; min-width: 360px; }
+.sell-summary {
+  display: grid; grid-template-columns: 1fr 1fr; gap: 6px 18px;
+  padding: 12px 14px; background: rgba(255,255,255,0.025);
+  border: 1px solid var(--border); border-radius: 6px;
+}
+.sell-summary-row { display: flex; justify-content: space-between; gap: 12px; font-size: 11px; }
+.sell-k { color: var(--text3); text-transform: uppercase; letter-spacing: 0.8px; font-size: 9px; align-self: center; }
+.sell-v { color: var(--text); font-family: 'Space Mono', monospace; font-weight: 600; }
+.sell-v.pos { color: var(--success); }
+.sell-v.neg { color: var(--danger); }
+.sell-label { font-size: 10px; letter-spacing: 1px; text-transform: uppercase; color: var(--text3); }
+.sell-input-row { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
+.sell-input-row .field { flex: 1; min-width: 140px; font-size: 14px; padding: 8px 10px; }
+.sell-quick { display: flex; gap: 4px; }
+.sell-quick .pill { padding: 5px 10px; font-size: 10px; }
+.sell-preview {
+  font-size: 11px; color: var(--text2); padding: 8px 12px;
+  background: rgba(255,255,255,0.02); border-radius: 4px;
+  border-left: 2px solid var(--border); min-height: 32px;
+}
+.sell-preview.ok   { border-left-color: var(--success); color: var(--text); }
+.sell-preview.warn { border-left-color: #ffcc00; color: var(--text); }
+.sell-preview.neg  { border-left-color: var(--danger); color: var(--danger); }
+.sell-error {
+  font-size: 11px; color: var(--danger); padding: 8px 12px;
+  background: rgba(255,64,96,0.06); border: 1px solid rgba(255,64,96,0.20); border-radius: 4px;
+}
+.sell-actions { display: flex; gap: 10px; justify-content: flex-end; margin-top: 4px; }
+.sell-confirm { background: rgba(255,64,96,0.18); color: var(--danger); border-color: rgba(255,64,96,0.40); }
+.sell-confirm:hover { background: rgba(255,64,96,0.30); }
+.sell-confirm:disabled { opacity: 0.6; cursor: not-allowed; }
 .pf-h-bar-wrap { width: 60px; height: 4px; background: rgba(255,255,255,0.06); border-radius: 2px; overflow: hidden; display: inline-block; vertical-align: middle; margin-right: 6px; }
 .pf-h-bar { height: 100%; border-radius: 2px; }
 .pf-h-actions { display: flex; gap: 4px; justify-content: flex-end; }

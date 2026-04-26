@@ -1,4 +1,4 @@
-// QuantDash frontend — vanilla JS, no build step.
+﻿// QuantDash frontend — vanilla JS, no build step.
 // Loads after config.js and Chart.js (see <script> order in index.html).
 //
 // File layout (top → bottom):
@@ -1604,19 +1604,20 @@ async function _renderPortfolio() {
   }
 
   // Holdings table — reuses analytics rows. Action buttons: BUY pre-fills the
-  // add-position form (so user can confirm shares/cost), SELL removes the
-  // entire position. We deliberately don't auto-execute partial sells — the
-  // server has no concept of "trade" yet, just position state.
+  // add-position form (so user can confirm shares/cost), SELL opens a partial-
+  // sell modal so the user can enter how many shares to sell.
   const rows = positions.map((p, i) => {
     const dayCls   = (p.day_change_pct || 0) >= 0 ? "pos" : "neg";
     const uplCls   = (p.unrealized_pl   || 0) >= 0 ? "pos" : "neg";
-    const sigCls   = p.signal === "Buy" ? "pos" : (p.signal === "Avoid" ? "neg" : "");
     const weightPct = ((p.weight || 0) * 100).toFixed(1);
     const color    = PF_DONUT_COLORS[i % PF_DONUT_COLORS.length];
+    const sigBadge = p.signal
+      ? `<span class="pf-h-sigbadge sig-${(p.signal||"").toLowerCase().replace(/\s+/g,"-")}">${p.signal}</span>`
+      : "";
     return `
       <tr>
         <td>
-          <div class="pf-h-sym">${p.ticker}</div>
+          <div class="pf-h-sym">${p.ticker} ${sigBadge}</div>
           <div class="pf-h-sub">${p.sector || "—"}</div>
         </td>
         <td>${(p.shares || 0).toLocaleString("en-US", {maximumFractionDigits: 4})}</td>
@@ -1626,13 +1627,11 @@ async function _renderPortfolio() {
         <td>${fmtPrice(p.value)}</td>
         <td class="${uplCls}">${fmtPrice(p.unrealized_pl)} <span style="font-size:9px;opacity:0.7">(${fmtPct(p.unrealized_pl_pct)})</span></td>
         <td>
-          <div style="display:flex;align-items:center;gap:6px;justify-content:flex-end">
+          <div class="pf-h-wt">
             <div class="pf-h-bar-wrap"><div class="pf-h-bar" style="width:${weightPct}%;background:${color}"></div></div>
-            <span style="font-size:10px;color:var(--text2);min-width:32px;text-align:right">${weightPct}%</span>
+            <span class="pf-h-wt-num">${weightPct}%</span>
           </div>
         </td>
-        <td>${fmtNum(p.beta, 2)}</td>
-        <td class="${sigCls}">${p.signal || "—"}</td>
         <td>
           <div class="pf-h-actions">
             <button class="pf-act pf-act-buy"  data-buy="${p.ticker}"  data-price="${p.price ?? ""}">BUY</button>
@@ -1645,9 +1644,9 @@ async function _renderPortfolio() {
   tableEl.innerHTML = `
     <table class="pf-holdings-table">
       <thead><tr>
-        <th>Symbol</th><th>Shares</th><th>Avg Cost</th><th>Price</th>
-        <th>Day %</th><th>Value</th><th>Unrl P&amp;L</th>
-        <th>Weight</th><th>β</th><th>Signal</th><th></th>
+        <th>Symbol</th><th>Shares</th><th>Avg</th><th>Price</th>
+        <th>Day</th><th>Value</th><th>Unrl P&amp;L</th>
+        <th>Weight</th><th></th>
       </tr></thead>
       <tbody>${rows}</tbody>
     </table>`;
@@ -1707,46 +1706,11 @@ async function _renderPortfolio() {
     });
   });
   tableEl.querySelectorAll("button[data-sell]").forEach(btn => {
-    btn.addEventListener("click", async () => {
+    btn.addEventListener("click", () => {
       const ticker = btn.dataset.sell;
       const row = positions.find(p => p.ticker === ticker);
-      const owned = row ? Number(row.shares) || 0 : 0;
-      if (owned <= 0) {
-        alert(`No shares of ${ticker} on record.`);
-        return;
-      }
-      const ans = prompt(
-        `Sell how many shares of ${ticker}?\n\n` +
-        `You currently own ${owned}. Enter a smaller number for a partial sell, or ${owned} (or "all") to remove the position entirely.`,
-        String(owned)
-      );
-      if (ans === null) return;
-      const trimmed = ans.trim().toLowerCase();
-      let qty;
-      if (trimmed === "all" || trimmed === "max") {
-        qty = owned;
-      } else {
-        qty = Number(trimmed);
-        if (!Number.isFinite(qty) || qty <= 0) {
-          alert("Enter a positive number of shares (or 'all').");
-          return;
-        }
-        if (qty > owned + 1e-9) {
-          alert(`You only own ${owned} shares of ${ticker}.`);
-          return;
-        }
-      }
-      btn.disabled = true;
-      // Tiny float tolerance so "5.00" vs 5 still triggers the full-sell branch.
-      if (Math.abs(qty - owned) < 1e-6) {
-        const ok = await Portfolio.remove(ticker);
-        if (!ok) { alert(`Failed to sell ${ticker}.`); btn.disabled = false; return; }
-      } else {
-        const remaining = owned - qty;
-        const r = await Portfolio.setShares(ticker, remaining);
-        if (!r.ok) { alert(`Failed to sell ${ticker}: ${r.error || "unknown error"}`); btn.disabled = false; return; }
-      }
-      _renderPortfolio();
+      if (!row) return;
+      _openSellModal(row);
     });
   });
 
@@ -1876,6 +1840,141 @@ async function _renderPortfolioPerf() {
       },
     },
   });
+}
+
+// Custom sell modal \u2014 replaces the ugly browser prompt(). Shows current
+// position context, lets the user enter shares to sell, and offers
+// quick-pick buttons (25% / 50% / 75% / All). Reuses the global
+// Modal (#modal-root) so it gets the same backdrop/blur as everything else.
+function _openSellModal(pos) {
+  const ticker = pos.ticker;
+  const owned  = Number(pos.shares) || 0;
+  const price  = Number(pos.price)  || 0;
+  const avg    = Number(pos.avg_cost) || 0;
+  if (owned <= 0) { alert(`No shares of ${ticker} on record.`); return; }
+
+  const proceedsAt = (qty) => price > 0 ? price * qty : null;
+  const plPerShare = price > 0 ? price - avg : null;
+
+  Modal.open(`Sell ${ticker}`, `
+    <div class="sell-modal">
+      <div class="sell-summary">
+        <div class="sell-summary-row">
+          <span class="sell-k">Owned</span><span class="sell-v">${owned.toLocaleString("en-US",{maximumFractionDigits:4})}</span>
+        </div>
+        <div class="sell-summary-row">
+          <span class="sell-k">Avg cost</span><span class="sell-v">${fmtPrice(avg)}</span>
+        </div>
+        <div class="sell-summary-row">
+          <span class="sell-k">Live price</span><span class="sell-v">${price > 0 ? fmtPrice(price) : "\u2014"}</span>
+        </div>
+        ${plPerShare !== null ? `<div class="sell-summary-row">
+          <span class="sell-k">P&amp;L / share</span>
+          <span class="sell-v ${plPerShare >= 0 ? "pos" : "neg"}">${plPerShare >= 0 ? "+" : ""}${fmtPrice(plPerShare)}</span>
+        </div>` : ""}
+      </div>
+
+      <label class="sell-label">Shares to sell</label>
+      <div class="sell-input-row">
+        <input id="sell-qty" class="field" type="number" step="any" min="0" max="${owned}" value="${owned}" autofocus>
+        <div class="sell-quick">
+          <button class="pill ghost" data-pct="0.25">25%</button>
+          <button class="pill ghost" data-pct="0.5">50%</button>
+          <button class="pill ghost" data-pct="0.75">75%</button>
+          <button class="pill ghost" data-pct="1">All</button>
+        </div>
+      </div>
+
+      <div id="sell-preview" class="sell-preview">\u2014</div>
+      <div id="sell-error" class="sell-error" hidden></div>
+
+      <div class="sell-actions">
+        <button class="pill" data-close>Cancel</button>
+        <button id="sell-confirm" class="pill cta sell-confirm">Confirm Sell</button>
+      </div>
+    </div>
+  `);
+
+  const qtyEl     = document.getElementById("sell-qty");
+  const previewEl = document.getElementById("sell-preview");
+  const errEl     = document.getElementById("sell-error");
+  const confirmEl = document.getElementById("sell-confirm");
+
+  function _normalize() {
+    const raw = qtyEl.value.trim().toLowerCase();
+    if (raw === "all" || raw === "max") return owned;
+    const n = Number(raw);
+    return Number.isFinite(n) ? n : NaN;
+  }
+  function _refreshPreview() {
+    const q = _normalize();
+    errEl.hidden = true;
+    if (!Number.isFinite(q) || q <= 0) {
+      previewEl.textContent = "Enter how many shares to sell.";
+      previewEl.className = "sell-preview";
+      return;
+    }
+    if (q > owned + 1e-9) {
+      previewEl.textContent = `You only own ${owned} shares.`;
+      previewEl.className = "sell-preview neg";
+      return;
+    }
+    const remaining = Math.max(0, owned - q);
+    const proceeds = proceedsAt(q);
+    const realized = (price > 0 && avg >= 0) ? (price - avg) * q : null;
+    const isFull = Math.abs(q - owned) < 1e-6;
+    let txt = isFull ? `Sell ALL \u2014 position will be removed.` : `Sell ${q} \u2192 ${remaining.toLocaleString("en-US",{maximumFractionDigits:4})} shares remain.`;
+    if (proceeds !== null) txt += ` \u00b7 Proceeds \u2248 ${fmtPrice(proceeds)}`;
+    if (realized !== null) txt += ` \u00b7 Realized ${realized >= 0 ? "+" : ""}${fmtPrice(realized)}`;
+    previewEl.textContent = txt;
+    previewEl.className = "sell-preview " + ((realized !== null && realized < 0) ? "warn" : "ok");
+  }
+
+  qtyEl.addEventListener("input", _refreshPreview);
+  document.querySelectorAll(".sell-quick button[data-pct]").forEach(b => {
+    b.addEventListener("click", (e) => {
+      e.preventDefault();
+      const pct = Number(b.dataset.pct);
+      const q = pct >= 1 ? owned : Math.round(owned * pct * 10000) / 10000;
+      qtyEl.value = String(q);
+      _refreshPreview();
+      qtyEl.focus();
+    });
+  });
+  qtyEl.addEventListener("keydown", (e) => {
+    if (e.key === "Enter") { e.preventDefault(); confirmEl.click(); }
+  });
+
+  confirmEl.addEventListener("click", async () => {
+    const q = _normalize();
+    if (!Number.isFinite(q) || q <= 0) {
+      errEl.textContent = "Enter a positive number of shares.";
+      errEl.hidden = false; return;
+    }
+    if (q > owned + 1e-9) {
+      errEl.textContent = `You only own ${owned} shares.`;
+      errEl.hidden = false; return;
+    }
+    confirmEl.disabled = true; confirmEl.textContent = "Selling\u2026";
+    let ok = true; let errMsg = null;
+    if (Math.abs(q - owned) < 1e-6) {
+      ok = await Portfolio.remove(ticker);
+      if (!ok) errMsg = "server rejected the request";
+    } else {
+      const remaining = owned - q;
+      const r = await Portfolio.setShares(ticker, remaining);
+      ok = r.ok; errMsg = r.error;
+    }
+    if (!ok) {
+      confirmEl.disabled = false; confirmEl.textContent = "Confirm Sell";
+      errEl.textContent = `Failed: ${errMsg || "unknown error"}`;
+      errEl.hidden = false; return;
+    }
+    Modal.close();
+    _renderPortfolio();
+  });
+
+  _refreshPreview();
 }
 
 // ----- Router (hash-based SPA routing) -----
