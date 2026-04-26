@@ -382,6 +382,110 @@ nav {
   width: 10px; height: 10px; border-radius: 2px; display: inline-block;
 }
 
+/* REGIME & VOLATILITY card */
+.regime-body {
+  display: grid; grid-template-columns: repeat(3, 1fr);
+  gap: 8px; padding: 12px 16px 4px;
+  font-family: 'Space Mono', monospace; font-size: 10px;
+}
+.regime-cell {
+  background: rgba(0,0,0,0.25);
+  padding: 8px 10px; border-radius: 4px;
+  border: 1px solid var(--border);
+}
+.regime-cell .lbl { color: var(--text3); font-size: 9px; letter-spacing: 0.5px; text-transform: uppercase; }
+.regime-cell .val { color: var(--text); font-size: 14px; font-weight: 700; margin-top: 2px; }
+.regime-cell .sub { color: var(--text3); font-size: 9px; margin-top: 2px; }
+.regime-cell.bull { border-color: rgba(0,255,170,0.35); }
+.regime-cell.bull .val { color: var(--success); }
+.regime-cell.bear { border-color: rgba(255,80,80,0.35); }
+.regime-cell.bear .val { color: var(--danger); }
+.regime-cell.mixed { border-color: rgba(255,200,0,0.35); }
+.regime-cell.mixed .val { color: var(--warn); }
+.regime-anomaly {
+  margin: 4px 16px 8px; padding: 6px 10px;
+  border-radius: 4px;
+  background: rgba(255,80,80,0.10);
+  border: 1px solid rgba(255,80,80,0.3);
+  color: var(--danger);
+  font-size: 10px; letter-spacing: 0.5px;
+}
+.card-badge.badge-bull  { background: rgba(0,255,170,0.10); color: var(--success); border: 1px solid rgba(0,255,170,0.3); }
+.card-badge.badge-bear  { background: rgba(255,80,80,0.10); color: var(--danger);  border: 1px solid rgba(255,80,80,0.3); }
+.card-badge.badge-mixed { background: rgba(255,200,0,0.10); color: var(--warn);    border: 1px solid rgba(255,200,0,0.3); }
+
+/* SECTOR BREAKDOWN card */
+.sectors-body { padding: 6px 0 8px; }
+.sector-row {
+  display: grid;
+  grid-template-columns: 1.6fr 70px 70px 60px 50px;
+  align-items: center;
+  gap: 8px;
+  padding: 7px 16px;
+  font-family: 'Space Mono', monospace;
+  font-size: 11px;
+  border-bottom: 1px solid rgba(0,255,170,0.04);
+}
+.sector-row.header {
+  font-size: 9px; color: var(--text3);
+  text-transform: uppercase; letter-spacing: 0.5px;
+  border-bottom: 1px solid var(--border);
+}
+.sector-row .sec-name { color: var(--text); font-weight: 700; }
+.sector-bar-wrap {
+  position: relative; height: 6px;
+  background: var(--bg3); border-radius: 2px; overflow: hidden;
+}
+.sector-bar {
+  position: absolute; top: 0; bottom: 0; left: 50%;
+  transform-origin: left;
+}
+.sector-bar.pos { background: var(--success); }
+.sector-bar.neg { background: var(--danger); transform-origin: right; }
+.sector-buys { color: var(--success); }
+.sector-buys.empty { color: var(--text3); }
+
+/* MACRO FACTORS card */
+.macro-body { padding: 4px 0 8px; }
+.macro-row {
+  display: grid;
+  grid-template-columns: 70px 90px repeat(4, 1fr);
+  align-items: center;
+  gap: 8px;
+  padding: 7px 16px;
+  font-family: 'Space Mono', monospace;
+  font-size: 11px;
+  border-bottom: 1px solid rgba(0,255,170,0.04);
+}
+.macro-row.header { font-size: 9px; color: var(--text3); text-transform: uppercase; letter-spacing: 0.5px; border-bottom: 1px solid var(--border); }
+.macro-row .macro-lbl { color: var(--text); font-weight: 700; letter-spacing: 0.5px; }
+.macro-row .macro-px { color: var(--text2); }
+.macro-row .macro-chg.up { color: var(--success); }
+.macro-row .macro-chg.dn { color: var(--danger); }
+.macro-row .macro-chg.flat { color: var(--text3); }
+
+/* NEWS card */
+.news-body { padding: 4px 0 6px; max-height: 320px; overflow-y: auto; }
+.news-item {
+  padding: 8px 16px;
+  border-bottom: 1px solid rgba(0,255,170,0.04);
+  display: flex; flex-direction: column; gap: 3px;
+  font-size: 11px;
+}
+.news-item:hover { background: rgba(0,255,170,0.04); }
+.news-title {
+  color: var(--text);
+  text-decoration: none;
+  line-height: 1.4;
+}
+.news-title:hover { color: var(--accent); }
+.news-meta {
+  color: var(--text3); font-size: 9px;
+  display: flex; gap: 8px; align-items: center;
+  letter-spacing: 0.3px;
+}
+.news-publisher { color: var(--accent2); }
+
 /* Responsive */
 @media (max-width: 1100px) {
   .stat-strip { grid-template-columns: repeat(3,1fr); }

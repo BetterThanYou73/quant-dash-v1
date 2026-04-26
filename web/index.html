@@ -154,13 +154,19 @@
         </div>
       </div>
 
-      <!-- MARKET REGIME & VOL FORECAST — real ML, Step 6+ -->
+      <!-- REGIME & VOLATILITY — SMA-based trend regime + RiskMetrics EWMA vol.
+           Defaults to SPY ("the market") but updates to the selected ticker. -->
       <div class="chart-card">
         <div class="card-header">
-          <div class="card-title">Regime &amp; Volatility</div>
-          <span class="card-badge badge-warn">STEP 7</span>
+          <div class="card-title">Regime &amp; Volatility — <span id="regime-ticker">SPY</span></div>
+          <span class="card-badge" id="regime-badge">—</span>
         </div>
-        <div class="placeholder">Trend regime + GARCH vol forecast + anomaly flag.</div>
+        <div id="regime-body" class="regime-body">
+          <div class="placeholder">Loading regime…</div>
+        </div>
+        <div class="chart-container" style="height:140px">
+          <canvas id="regime-chart"></canvas>
+        </div>
       </div>
 
     </div>
@@ -169,22 +175,26 @@
   <!-- BOTTOM ROW — three analytical panels -->
   <div class="bottom-row">
 
-    <!-- SECTOR BREAKDOWN — Step 8 -->
+    <!-- SECTOR BREAKDOWN — GICS sector rollups of the MFC composite. -->
     <div class="chart-card">
       <div class="card-header">
         <div class="card-title">Sector Breakdown</div>
-        <span class="card-badge badge-warn">STEP 8</span>
+        <span class="card-badge badge-blue" id="sectors-meta">—</span>
       </div>
-      <div class="placeholder">Per-sector aggregated signals.</div>
+      <div id="sectors-body" class="sectors-body">
+        <div class="placeholder">Loading sector aggregates…</div>
+      </div>
     </div>
 
-    <!-- MACRO FACTORS — Step 7 (FRED + yfinance) -->
+    <!-- MACRO FACTORS — fixed basket via yfinance: VIX, 10Y, oil, gold, DXY, S&P. -->
     <div class="chart-card">
       <div class="card-header">
         <div class="card-title">Macro Factors</div>
-        <span class="card-badge badge-warn">STEP 7</span>
+        <span class="card-badge badge-blue" id="macro-meta">—</span>
       </div>
-      <div class="placeholder">Fed rate · CPI · GDP · VIX · oil · gold · USD.</div>
+      <div id="macro-body" class="macro-body">
+        <div class="placeholder">Loading macro…</div>
+      </div>
     </div>
 
     <!-- RISK / CORRELATION — pure CSS-grid heatmap of return correlations across the watchlist. -->
@@ -224,13 +234,15 @@
       </div>
     </div>
 
-    <!-- NEWS — Step 9 (free tier news API) -->
+    <!-- NEWS — Yahoo Finance headlines for the selected ticker. -->
     <div class="chart-card">
       <div class="card-header">
-        <div class="card-title">News</div>
-        <span class="card-badge badge-warn">STEP 9</span>
+        <div class="card-title">News — <span id="news-ticker">—</span></div>
+        <span class="card-badge badge-blue" id="news-meta">—</span>
       </div>
-      <div class="placeholder">Headlines + (later) FinBERT sentiment.</div>
+      <div id="news-body" class="news-body">
+        <div class="placeholder">Select a ticker to see headlines.</div>
+      </div>
     </div>
 
   </div>

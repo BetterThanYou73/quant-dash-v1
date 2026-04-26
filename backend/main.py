@@ -25,6 +25,10 @@ from backend import routes_quote
 from backend import routes_pairs
 from backend import routes_risk
 from backend import routes_universe
+from backend import routes_sectors
+from backend import routes_regime
+from backend import routes_macro
+from backend import routes_news
 
 
 # --- App instance ---------------------------------------------------------
@@ -61,6 +65,10 @@ app.include_router(routes_quote.router)
 app.include_router(routes_pairs.router)
 app.include_router(routes_risk.router)
 app.include_router(routes_universe.router)
+app.include_router(routes_sectors.router)
+app.include_router(routes_regime.router)
+app.include_router(routes_macro.router)
+app.include_router(routes_news.router)
 
 
 @app.get("/api/health")

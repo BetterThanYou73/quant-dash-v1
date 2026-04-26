@@ -496,6 +496,8 @@ function selectTicker(ticker) {
   // Re-render the table to update the "selected" highlight without refetching.
   renderSignalsTable(AppState.lastSignals);
   loadPriceChart();
+  loadRegime();
+  loadNews();
 }
 
 // =========================================================================
@@ -564,6 +566,8 @@ async function loadSignals() {
     renderSignalsTable(data.results);
     renderStatStrip(data);
     loadPriceChart();
+    loadRegime();
+    loadNews();
   } catch (e) {
     document.getElementById("signals-body").innerHTML =
       `<div class="placeholder err">Failed to load signals: ${e.message}</div>`;
@@ -818,7 +822,226 @@ async function loadCorrelation() {
 }
 
 // =========================================================================
-// 9. BOOT
+// 9. SECTORS — GICS rollups of the MFC composite
+// =========================================================================
+
+async function loadSectors() {
+  const body = document.getElementById("sectors-body");
+  const meta = document.getElementById("sectors-meta");
+  if (!body) return;
+  try {
+    const data = await apiGet("/api/sectors");
+    if (!data.results || !data.results.length) {
+      body.innerHTML = `<div class="placeholder">No sectors yet.</div>`;
+      return;
+    }
+    if (meta) meta.textContent = `${data.sector_count} sectors`;
+    // Find max |avg_composite| to scale the divergent bar widths.
+    const maxAbs = Math.max(...data.results.map(r => Math.abs(r.avg_composite || 0)), 0.5);
+    const header = `
+      <div class="sector-row header">
+        <div>Sector</div>
+        <div>Avg Z</div>
+        <div>Med Mom</div>
+        <div>Buys</div>
+        <div>N</div>
+      </div>`;
+    const rows = data.results.map(r => {
+      const z = r.avg_composite || 0;
+      const pct = Math.min(100, Math.abs(z) / maxAbs * 50);  // half-width centered
+      const cls = z >= 0 ? "pos" : "neg";
+      const buyCount = (r.strong_buy || 0) + (r.buy || 0);
+      const buyCls = buyCount > 0 ? "sector-buys" : "sector-buys empty";
+      return `
+        <div class="sector-row">
+          <div class="sec-name">${r.Sector}</div>
+          <div>
+            <div style="display:flex;align-items:center;gap:6px">
+              <span class="sector-bar-wrap" style="flex:1">
+                <span class="sector-bar ${cls}" style="width:${pct}%"></span>
+              </span>
+              <span style="color:${z >= 0 ? "var(--success)" : "var(--danger)"};min-width:38px;text-align:right">${z >= 0 ? "+" : ""}${z.toFixed(2)}</span>
+            </div>
+          </div>
+          <div>${fmtPct(r.median_momentum)}</div>
+          <div class="${buyCls}">${buyCount}</div>
+          <div style="color:var(--text3)">${r.constituent_count}</div>
+        </div>`;
+    }).join("");
+    body.innerHTML = header + rows;
+  } catch (e) {
+    body.innerHTML = `<div class="placeholder err">${e.message}</div>`;
+  }
+}
+
+// =========================================================================
+// 10. REGIME & VOLATILITY — SMA trend + EWMA vol forecast
+// =========================================================================
+
+async function loadRegime() {
+  const body = document.getElementById("regime-body");
+  const tickerEl = document.getElementById("regime-ticker");
+  const badge = document.getElementById("regime-badge");
+  if (!body) return;
+
+  // Use selected ticker; fall back to SPY (the market).
+  const sym = AppState.selectedTicker || "SPY";
+  if (tickerEl) tickerEl.textContent = sym;
+
+  try {
+    body.innerHTML = `<div class="placeholder">Loading regime…</div>`;
+    const data = await apiGet(`/api/regime?ticker=${encodeURIComponent(sym)}`);
+    const code = data.regime.code;
+    const cls = code === "BULL" ? "bull" : code === "BEAR" ? "bear" : "mixed";
+    if (badge) {
+      badge.className = "card-badge badge-" + cls;
+      badge.textContent = code;
+    }
+    body.innerHTML = `
+      <div class="regime-cell ${cls}">
+        <div class="lbl">Trend</div>
+        <div class="val">${code}</div>
+        <div class="sub">${data.regime.description}</div>
+      </div>
+      <div class="regime-cell">
+        <div class="lbl">Realized 21d</div>
+        <div class="val">${data.vol.realized_21d_annualized}%</div>
+        <div class="sub">annualized stdev</div>
+      </div>
+      <div class="regime-cell">
+        <div class="lbl">EWMA Forecast</div>
+        <div class="val">${data.vol.ewma_today_annualized}%</div>
+        <div class="sub">RiskMetrics λ=${data.vol.lambda}</div>
+      </div>
+      ${data.anomaly.flagged
+        ? `<div class="regime-anomaly" style="grid-column: span 3">
+             ⚠ Anomaly: today's move ${data.anomaly.last_return_pct >= 0 ? "+" : ""}${data.anomaly.last_return_pct}% exceeds 3σ
+           </div>`
+        : ""}
+    `;
+    renderRegimeChart(data.ewma_series);
+  } catch (e) {
+    body.innerHTML = `<div class="placeholder err">${e.message}</div>`;
+    if (badge) { badge.className = "card-badge"; badge.textContent = "—"; }
+  }
+}
+
+function renderRegimeChart(series) {
+  const canvas = document.getElementById("regime-chart");
+  if (!canvas || !series || !series.length || typeof Chart === "undefined") return;
+  destroyChart("regime");
+  chartRegistry.regime = new Chart(canvas.getContext("2d"), {
+    type: "line",
+    data: {
+      labels: series.map(p => p.date),
+      datasets: [{
+        label: "EWMA Vol (annualized %)",
+        data: series.map(p => p.vol_pct),
+        borderColor: "rgba(0,207,255,0.9)",
+        backgroundColor: "rgba(0,207,255,0.1)",
+        borderWidth: 1.4,
+        fill: true,
+        pointRadius: 0,
+        tension: 0.2,
+      }],
+    },
+    options: {
+      responsive: true, maintainAspectRatio: false,
+      plugins: { legend: { display: false } },
+      scales: {
+        x: { display: false },
+        y: { ticks: { color: "rgba(255,255,255,0.4)", font: { size: 9 } }, grid: { color: "rgba(255,255,255,0.04)" } },
+      },
+    },
+  });
+}
+
+// =========================================================================
+// 11. MACRO FACTORS — VIX, 10Y, oil, gold, DXY, S&P
+// =========================================================================
+
+async function loadMacro() {
+  const body = document.getElementById("macro-body");
+  const meta = document.getElementById("macro-meta");
+  if (!body) return;
+  try {
+    const data = await apiGet("/api/macro");
+    if (meta) meta.textContent = `${data.results.length} indicators`;
+    const colorClass = (n) => n == null ? "flat" : n > 0 ? "up" : n < 0 ? "dn" : "flat";
+    const fmtChg = (n) => n == null ? "—" : (n >= 0 ? "+" : "") + n.toFixed(2) + "%";
+    const header = `
+      <div class="macro-row header">
+        <div>Indicator</div>
+        <div>Level</div>
+        <div>1d</div>
+        <div>5d</div>
+        <div>21d</div>
+        <div>1y</div>
+      </div>`;
+    const rows = data.results.map(r => `
+      <div class="macro-row" title="${r.description}">
+        <div class="macro-lbl">${r.label}</div>
+        <div class="macro-px">${r.price == null ? "—" : r.price.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</div>
+        <div class="macro-chg ${colorClass(r.change_1d_pct)}">${fmtChg(r.change_1d_pct)}</div>
+        <div class="macro-chg ${colorClass(r.change_5d_pct)}">${fmtChg(r.change_5d_pct)}</div>
+        <div class="macro-chg ${colorClass(r.change_21d_pct)}">${fmtChg(r.change_21d_pct)}</div>
+        <div class="macro-chg ${colorClass(r.change_252d_pct)}">${fmtChg(r.change_252d_pct)}</div>
+      </div>`).join("");
+    body.innerHTML = header + rows;
+  } catch (e) {
+    body.innerHTML = `<div class="placeholder err">${e.message}</div>`;
+  }
+}
+
+// =========================================================================
+// 12. NEWS — headlines for the selected ticker
+// =========================================================================
+
+function _relativeTime(iso) {
+  if (!iso) return "";
+  const t = new Date(iso).getTime();
+  if (Number.isNaN(t)) return "";
+  const diffMin = Math.max(0, Math.floor((Date.now() - t) / 60000));
+  if (diffMin < 60)   return `${diffMin}m ago`;
+  if (diffMin < 1440) return `${Math.floor(diffMin / 60)}h ago`;
+  return `${Math.floor(diffMin / 1440)}d ago`;
+}
+
+async function loadNews() {
+  const body = document.getElementById("news-body");
+  const tickerEl = document.getElementById("news-ticker");
+  const meta = document.getElementById("news-meta");
+  if (!body) return;
+  const sym = AppState.selectedTicker;
+  if (tickerEl) tickerEl.textContent = sym || "—";
+  if (!sym) {
+    body.innerHTML = `<div class="placeholder">Select a ticker to see headlines.</div>`;
+    return;
+  }
+  try {
+    body.innerHTML = `<div class="placeholder">Loading headlines for ${sym}…</div>`;
+    const data = await apiGet(`/api/news?ticker=${encodeURIComponent(sym)}&limit=8`);
+    if (meta) meta.textContent = `${data.count} items`;
+    if (!data.results.length) {
+      body.innerHTML = `<div class="placeholder">No recent headlines for ${sym}.</div>`;
+      return;
+    }
+    body.innerHTML = data.results.map(n => `
+      <div class="news-item">
+        <a class="news-title" href="${n.link || "#"}" target="_blank" rel="noopener noreferrer">${n.title}</a>
+        <div class="news-meta">
+          <span class="news-publisher">${n.publisher || "—"}</span>
+          <span>·</span>
+          <span>${_relativeTime(n.published_utc)}</span>
+        </div>
+      </div>`).join("");
+  } catch (e) {
+    body.innerHTML = `<div class="placeholder err">${e.message}</div>`;
+  }
+}
+
+// =========================================================================
+// 13. BOOT
 // =========================================================================
 
 document.addEventListener("DOMContentLoaded", () => {
@@ -833,7 +1056,10 @@ document.addEventListener("DOMContentLoaded", () => {
 
   pingHealth();
   loadTickerBar();
-  loadSignals();          // → loads price chart for top ticker
+  loadSignals();          // → loads price chart + regime + news for top ticker
   loadCorrelation();
   loadPairs();            // initial run with default KO/PEP
+  loadSectors();
+  loadRegime();           // defaults to SPY until a ticker is selected
+  loadMacro();
 });
