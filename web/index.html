@@ -5,7 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>QuantDash — Quantitative Dashboard</title>
 <link href="https://fonts.googleapis.com/css2?family=Space+Mono:ital,wght@0,400;0,700;1,400&family=Syne:wght@400;600;700;800&display=swap" rel="stylesheet">
-<link rel="stylesheet" href="styles.css?v=12">
+<link rel="stylesheet" href="styles.css?v=13">
 </head>
 <body>
 
@@ -316,8 +316,117 @@
       <button id="pf-add" class="pill cta" style="padding:5px 14px">Add Position</button>
     </div>
   </div>
-  <div id="pf-summary" class="pf-summary"></div>
-  <div id="pf-table"></div>
+
+  <!-- Stat strip — populated by _renderPortfolio() from /api/portfolio/analytics totals.
+       Mix of real metrics and "Phase 2c" placeholders styled the same so the layout feels intentional. -->
+  <div id="pf-stat-strip" class="stat-strip pf-stat-strip"></div>
+
+  <!-- Row 1 — Holdings table (left) + donut breakdown (right). The donut is rendered
+       client-side as inline SVG using the same colors as the legend. -->
+  <div class="pf-row pf-row-2-1">
+    <div class="pf-card">
+      <div class="pf-card-header">
+        <div class="pf-card-title">Holdings</div>
+        <span class="pf-badge pf-badge-g" id="pf-holdings-count">—</span>
+        <span class="pf-badge pf-badge-b">LIVE PRICES</span>
+      </div>
+      <div id="pf-table" class="pf-card-body"></div>
+    </div>
+    <div class="pf-card">
+      <div class="pf-card-header">
+        <div class="pf-card-title">Allocation</div>
+        <span class="pf-badge pf-badge-g">BY VALUE</span>
+      </div>
+      <div id="pf-donut" class="pf-donut-wrap"></div>
+      <div id="pf-donut-legend" class="pf-donut-legend"></div>
+    </div>
+  </div>
+
+  <!-- Row 2 — Sector exposure + risk panel. Sector exposure is real; risk panel mixes
+       real metrics (Beta, Composite Z, Concentration) with stubbed ones marked "soon". -->
+  <div class="pf-row pf-row-2-1">
+    <div class="pf-card">
+      <div class="pf-card-header">
+        <div class="pf-card-title">Sector Exposure</div>
+        <span class="pf-badge pf-badge-b">PORTFOLIO WEIGHT</span>
+      </div>
+      <div id="pf-sectors" class="pf-card-body"></div>
+    </div>
+    <div class="pf-card">
+      <div class="pf-card-header">
+        <div class="pf-card-title">Risk Assessment</div>
+        <span class="pf-badge pf-badge-w" id="pf-risk-overall">—</span>
+      </div>
+      <div id="pf-risk-grid" class="pf-risk-grid"></div>
+    </div>
+  </div>
+
+  <!-- Row 3 — Advisor chat stub (Phase 2c). Visual placeholder so the layout reads
+       intentionally; actual /api/advisor wiring lands in the next phase. -->
+  <div class="pf-card pf-stub">
+    <div class="pf-card-header">
+      <div class="pf-card-title">AI Investment Advisor</div>
+      <span class="pf-badge pf-badge-o">PHASE 2C — NEXT UP</span>
+    </div>
+    <div class="pf-stub-body">
+      <div class="pf-stub-icon">🤖</div>
+      <div class="pf-stub-text">
+        <strong>Coming next:</strong> a Claude-powered chat that has full visibility
+        into your portfolio. Ask things like <em>"should I trim TSLA?"</em> or
+        <em>"rebalance for moderate risk"</em> and it will answer using your real
+        positions, factor scores, and sector exposure as ground truth.
+      </div>
+    </div>
+  </div>
+
+  <!-- Row 4 — Strategies + Pairs trading stubs (Phase 2d / 2c). Visual cards only. -->
+  <div class="pf-row pf-row-2">
+    <div class="pf-card">
+      <div class="pf-card-header">
+        <div class="pf-card-title">Investment Strategies</div>
+        <span class="pf-badge pf-badge-o">PHASE 2D</span>
+      </div>
+      <div class="pf-strat-grid">
+        <div class="pf-strat-card"><div class="pf-strat-icon">📈</div><div class="pf-strat-name">Momentum</div><div class="pf-strat-desc">Ride strong upward trends, exit on reversal.</div></div>
+        <div class="pf-strat-card"><div class="pf-strat-icon">🔄</div><div class="pf-strat-name">Mean Reversion</div><div class="pf-strat-desc">Buy oversold, sell overbought. RSI/Bollinger.</div></div>
+        <div class="pf-strat-card"><div class="pf-strat-icon">⚡</div><div class="pf-strat-name">Breakout</div><div class="pf-strat-desc">Enter on volume-confirmed resistance breaks.</div></div>
+        <div class="pf-strat-card"><div class="pf-strat-icon">🛡️</div><div class="pf-strat-name">Value</div><div class="pf-strat-desc">Buy fundamentally cheap, hold long-term.</div></div>
+        <div class="pf-strat-card"><div class="pf-strat-icon">💸</div><div class="pf-strat-name">Dividend Capture</div><div class="pf-strat-desc">Time entries around ex-dividend dates.</div></div>
+        <div class="pf-strat-card"><div class="pf-strat-icon">🤖</div><div class="pf-strat-name">Quant Signals</div><div class="pf-strat-desc">Composite-Z driven entries (already live).</div></div>
+      </div>
+    </div>
+    <div class="pf-card">
+      <div class="pf-card-header">
+        <div class="pf-card-title">Pairs Trading</div>
+        <span class="pf-badge pf-badge-o">PHASE 2C</span>
+      </div>
+      <div class="pf-stub-body" style="padding:30px 18px;">
+        <div class="pf-stub-icon">⚖️</div>
+        <div class="pf-stub-text">
+          Cointegration-tested pairs from your sector exposure. Long the cheap leg,
+          short the rich leg, profit on mean reversion. We'll surface 3–5 candidates
+          per refresh once the advisor lands.
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Row 5 — Money multiplier calculator stub (Phase 2e Monte Carlo). -->
+  <div class="pf-card pf-stub">
+    <div class="pf-card-header">
+      <div class="pf-card-title">💸 Money Multiplier — X to 10X Calculator</div>
+      <span class="pf-badge pf-badge-o">PHASE 2E — MONTE CARLO</span>
+    </div>
+    <div class="pf-stub-body">
+      <div class="pf-stub-icon">🎯</div>
+      <div class="pf-stub-text">
+        Bootstrap historical daily returns to estimate <em>median / p25 / p75</em>
+        trading days to reach a target multiple of your starting capital. Pure
+        numpy, ~50ms server-side, no LLM tokens. Wired up in Phase 2e.
+      </div>
+    </div>
+  </div>
+
   <div class="pf-disclaimer">
     Positions are stored on the server, scoped to this browser via a device-id cookie.
     Sign in to access your portfolio from any device. Prices come from the cached market
@@ -345,6 +454,6 @@
 
 <!-- Order matters: config first (sets API_BASE), then app reads window.QD_CONFIG -->
 <script src="config.js"></script>
-<script src="app.js?v=12"></script>
+<script src="app.js?v=13"></script>
 </body>
 </html>

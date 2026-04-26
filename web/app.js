@@ -1437,14 +1437,116 @@ async function _addPortfolioPosition() {
   _renderPortfolio();
 }
 
-async function _renderPortfolio() {
-  const tableEl = document.getElementById("pf-table");
-  const sumEl = document.getElementById("pf-summary");
-  const metaEl = document.getElementById("pf-meta");
-  tableEl.innerHTML = `<div class="placeholder">Loading portfolio analytics…</div>`;
-  sumEl.innerHTML = "";
+// Donut palette — wraps modulo when there are more positions than colors.
+// Colors picked to read well on the dark bg and stay distinct from each other.
+const PF_DONUT_COLORS = [
+  "#00ffaa", "#00cfff", "#ff6b35", "#ffcc00", "#9b59b6",
+  "#e74c3c", "#3498db", "#1abc9c", "#f39c12", "#ec407a",
+];
 
-  // One round-trip for everything: positions + prices + factors + sector exposure.
+// Stat-strip card factory — mirrors the dashboard's .stat-card pattern so the
+// portfolio page reads as one consistent design system. `tone` colors the sub-
+// label: "up" green, "dn" red, "neu" muted, "stub" dimmed for placeholders.
+function _pfStat(label, value, sub, tone) {
+  const valColor = tone === "up" ? "var(--success)" : (tone === "dn" ? "var(--danger)" : "");
+  const subCls   = tone === "up" ? "up" : (tone === "dn" ? "dn" : "neu");
+  const dim      = tone === "stub" ? "opacity:0.55" : "";
+  return `<div class="stat-card" style="${dim}">
+    <div class="stat-label">${label}</div>
+    <div class="stat-val" style="${valColor ? `color:${valColor}` : ""}">${value}</div>
+    <div class="stat-sub ${subCls}">${sub}</div>
+  </div>`;
+}
+
+// Donut as inline SVG. We compute cumulative offsets along the circumference
+// for each slice — no chart library, just math, keeps the page deps-free.
+function _pfDonut(slices, total) {
+  const r = 64;
+  const circ = 2 * Math.PI * r;
+  let offset = 0;
+  const arcs = slices.map((s, i) => {
+    const len = circ * (s.weight || 0);
+    const arc = `<circle cx="85" cy="85" r="${r}" fill="none"
+      stroke="${PF_DONUT_COLORS[i % PF_DONUT_COLORS.length]}" stroke-width="26"
+      stroke-dasharray="${len.toFixed(2)} ${(circ - len).toFixed(2)}"
+      stroke-dashoffset="${(-offset).toFixed(2)}"
+      transform="rotate(-90 85 85)"
+      style="transition: stroke-dasharray 600ms"/>`;
+    offset += len;
+    return arc;
+  }).join("");
+  const totalLabel = "$" + (Math.round(total / 100) / 10).toFixed(1) + "K";
+  return `<svg width="170" height="170" viewBox="0 0 170 170" xmlns="http://www.w3.org/2000/svg">
+    <circle cx="85" cy="85" r="${r}" fill="none" stroke="rgba(255,255,255,0.05)" stroke-width="26"/>
+    ${arcs}
+    <text x="85" y="80" text-anchor="middle" fill="var(--text)" font-family="Syne,sans-serif" font-size="18" font-weight="700">${totalLabel}</text>
+    <text x="85" y="96" text-anchor="middle" fill="var(--text3)" font-family="Space Mono,monospace" font-size="9" letter-spacing="1">TOTAL</text>
+  </svg>`;
+}
+
+// Risk panel — three real metrics from analytics totals (beta, composite Z,
+// concentration via top-2 weight) + four labeled stubs that will light up in
+// later phases. Stubs use .stub class which dims them so the user sees what's
+// coming without thinking the value is real.
+function _pfRiskGrid(t, positions) {
+  // Concentration: sum of top-2 weights, expressed as % of portfolio.
+  const top2Weight = [...positions]
+    .map(p => p.weight || 0)
+    .sort((a, b) => b - a)
+    .slice(0, 2)
+    .reduce((a, b) => a + b, 0);
+  const concPct = (top2Weight * 100).toFixed(0);
+  const concTone = top2Weight > 0.4 ? "var(--danger)" : (top2Weight > 0.25 ? "#ffcc00" : "var(--success)");
+
+  const beta = t.weighted_beta;
+  const betaTone = beta == null ? "var(--text3)" : (beta > 1.2 ? "#ffcc00" : (beta < 0.8 ? "var(--accent2, #00cfff)" : "var(--success)"));
+  const betaDesc = beta == null ? "no data"
+    : (beta > 1.05 ? `${((beta - 1) * 100).toFixed(0)}% more volatile than market`
+    : (beta < 0.95 ? `${((1 - beta) * 100).toFixed(0)}% less volatile than market` : "tracks market closely"));
+
+  const cz = t.weighted_composite_z;
+  const czTone = cz == null ? "var(--text3)" : (cz > 0.3 ? "var(--success)" : (cz < -0.3 ? "var(--danger)" : "var(--text2)"));
+  const czDesc = cz == null ? "no data"
+    : (cz > 0.3 ? "factor signals lean bullish" : (cz < -0.3 ? "factor signals lean bearish" : "factor signals neutral"));
+
+  const items = [
+    { name: "Portfolio Beta",    val: fmtNum(beta, 2),                  fill: Math.min(100, Math.max(5, (beta || 1) * 50)), color: betaTone, desc: betaDesc },
+    { name: "Composite Z",       val: fmtNum(cz, 2),                    fill: Math.min(100, Math.max(5, ((cz || 0) + 2) * 25)), color: czTone, desc: czDesc },
+    { name: "Concentration",     val: concPct + "%",                    fill: Math.min(100, top2Weight * 100), color: concTone, desc: positions.length >= 2 ? `Top 2 = ${concPct}% of portfolio` : "single position" },
+    { name: "Positions",         val: String(positions.length),         fill: Math.min(100, positions.length * 10), color: "var(--accent2, #00cfff)", desc: positions.length < 5 ? "consider diversifying" : "good spread" },
+    { name: "Sharpe Ratio",      val: "—", fill: 0, color: "var(--text3)", desc: "needs return history (Phase 2c)", stub: true },
+    { name: "Max Drawdown",      val: "—", fill: 0, color: "var(--text3)", desc: "needs return history (Phase 2c)", stub: true },
+    { name: "VaR (95%)",         val: "—", fill: 0, color: "var(--text3)", desc: "needs return history (Phase 2c)", stub: true },
+    { name: "Liquidity Score",   val: "—", fill: 0, color: "var(--text3)", desc: "needs avg daily volume (Phase 2c)", stub: true },
+  ];
+
+  return items.map(it => `
+    <div class="pf-risk-item${it.stub ? " stub" : ""}">
+      <div class="pf-risk-name">${it.name}</div>
+      <div class="pf-risk-val" style="color:${it.color}">${it.val}</div>
+      <div class="pf-risk-track"><div class="pf-risk-fill" style="width:${it.fill}%;background:${it.color}"></div></div>
+      <div class="pf-risk-desc">${it.desc}</div>
+    </div>`).join("");
+}
+
+async function _renderPortfolio() {
+  const tableEl     = document.getElementById("pf-table");
+  const stripEl     = document.getElementById("pf-stat-strip");
+  const donutEl     = document.getElementById("pf-donut");
+  const donutLegEl  = document.getElementById("pf-donut-legend");
+  const sectorsEl   = document.getElementById("pf-sectors");
+  const riskEl      = document.getElementById("pf-risk-grid");
+  const riskBadgeEl = document.getElementById("pf-risk-overall");
+  const countEl     = document.getElementById("pf-holdings-count");
+  const metaEl      = document.getElementById("pf-meta");
+
+  tableEl.innerHTML = `<div class="placeholder">Loading portfolio analytics…</div>`;
+  stripEl.innerHTML = "";
+  donutEl.innerHTML = "";
+  donutLegEl.innerHTML = "";
+  sectorsEl.innerHTML = "";
+  riskEl.innerHTML = "";
+
   let analytics;
   try {
     analytics = await apiGet("/api/portfolio/analytics");
@@ -1458,94 +1560,145 @@ async function _renderPortfolio() {
     const ts = analytics.as_of_utc ? analytics.as_of_utc.replace("T", " ").slice(0, 16) + " UTC" : "no data";
     metaEl.textContent = `${positions.length} position${positions.length === 1 ? "" : "s"} · prices as of ${ts}`;
   }
+
+  const t = analytics.totals || {};
+
+  // Stat strip — always shown, even when empty, so the layout doesn't reflow
+  // dramatically when the user adds their first position.
+  const dayPct = (t.value && (t.value - (t.day_change || 0))) ? (t.day_change || 0) / (t.value - (t.day_change || 0)) : null;
+  const totalSub = (t.unrealized_pl || 0) >= 0
+    ? `▲ ${fmtPrice(t.unrealized_pl)} all-time`
+    : `▼ ${fmtPrice(Math.abs(t.unrealized_pl || 0))} all-time`;
+  stripEl.innerHTML = [
+    _pfStat("Total Value",     fmtPrice(t.value),         totalSub,                                         (t.unrealized_pl || 0) >= 0 ? "up" : "dn"),
+    _pfStat("Today's P&amp;L", fmtPrice(t.day_change),    fmtPct(dayPct) + " · " + positions.length + " holdings", (t.day_change || 0) >= 0 ? "up" : "dn"),
+    _pfStat("Unrealized",      fmtPrice(t.unrealized_pl), fmtPct(t.unrealized_pl_pct) + " return",          (t.unrealized_pl || 0) >= 0 ? "up" : "dn"),
+    _pfStat("Cost Basis",      fmtPrice(t.cost),          "across " + positions.length + " positions",      "neu"),
+    _pfStat("Beta vs " + (analytics.benchmark || "SPY"), fmtNum(t.weighted_beta, 2), "value-weighted",       "neu"),
+    _pfStat("Composite Z",     fmtNum(t.weighted_composite_z, 2), "factor score",                            (t.weighted_composite_z || 0) >= 0 ? "up" : "dn"),
+    _pfStat("Realized YTD",    "—",                       "trade history (Phase 2c)",                       "stub"),
+  ].join("");
+
+  if (countEl) countEl.textContent = `${positions.length} HOLDING${positions.length === 1 ? "" : "S"}`;
+
   if (!positions.length) {
-    tableEl.innerHTML = `<div class="placeholder">No positions yet. Add one above.</div>`;
+    tableEl.innerHTML = `<div class="placeholder" style="padding:30px 18px">No positions yet. Add one using the form above.</div>`;
+    sectorsEl.innerHTML = `<div class="placeholder" style="padding:18px">No sector exposure yet.</div>`;
+    donutEl.innerHTML = `<div class="placeholder" style="padding:30px 18px">Add positions to see allocation.</div>`;
+    if (riskBadgeEl) riskBadgeEl.textContent = "NO DATA";
+    riskEl.innerHTML = `<div class="placeholder" style="padding:18px;grid-column:1/-1">Risk metrics appear once you have positions.</div>`;
     return;
   }
 
-  const t = analytics.totals;
-  const dayPctApprox = (t.value && (t.value - t.day_change)) ? t.day_change / (t.value - t.day_change) : null;
-  sumEl.innerHTML = `
-    <div class="card"><div class="lbl">Market Value</div><div class="val">${fmtPrice(t.value)}</div></div>
-    <div class="card"><div class="lbl">Cost Basis</div><div class="val">${fmtPrice(t.cost)}</div></div>
-    <div class="card"><div class="lbl">Unrealized P&amp;L</div>
-      <div class="val" style="color:${(t.unrealized_pl||0)>=0?'var(--success)':'var(--danger)'}">${fmtPrice(t.unrealized_pl)}</div>
-      <div class="sub ${(t.unrealized_pl||0)>=0?'pos':'neg'}">${fmtPct(t.unrealized_pl_pct)}</div>
-    </div>
-    <div class="card"><div class="lbl">Today</div>
-      <div class="val" style="color:${(t.day_change||0)>=0?'var(--success)':'var(--danger)'}">${fmtPrice(t.day_change)}</div>
-      <div class="sub ${(t.day_change||0)>=0?'pos':'neg'}">${fmtPct(dayPctApprox)}</div>
-    </div>
-    <div class="card"><div class="lbl">Beta vs ${analytics.benchmark || "SPY"}</div>
-      <div class="val">${fmtNum(t.weighted_beta, 2)}</div>
-      <div class="sub" style="color:var(--text3)">value-weighted</div>
-    </div>
-    <div class="card"><div class="lbl">Composite Z</div>
-      <div class="val" style="color:${(t.weighted_composite_z||0)>=0?'var(--success)':'var(--danger)'}">${fmtNum(t.weighted_composite_z, 2)}</div>
-      <div class="sub" style="color:var(--text3)">factor score</div>
-    </div>`;
-
-  const rows = positions.map(p => {
-    const dayCls = (p.day_change_pct || 0) >= 0 ? "pos" : "neg";
-    const uplCls = (p.unrealized_pl || 0) >= 0 ? "pos" : "neg";
-    const sigCls = p.signal === "Buy" ? "pos" : (p.signal === "Avoid" ? "neg" : "");
+  // Holdings table — reuses analytics rows. Action buttons: BUY pre-fills the
+  // add-position form (so user can confirm shares/cost), SELL removes the
+  // entire position. We deliberately don't auto-execute partial sells — the
+  // server has no concept of "trade" yet, just position state.
+  const rows = positions.map((p, i) => {
+    const dayCls   = (p.day_change_pct || 0) >= 0 ? "pos" : "neg";
+    const uplCls   = (p.unrealized_pl   || 0) >= 0 ? "pos" : "neg";
+    const sigCls   = p.signal === "Buy" ? "pos" : (p.signal === "Avoid" ? "neg" : "");
+    const weightPct = ((p.weight || 0) * 100).toFixed(1);
+    const color    = PF_DONUT_COLORS[i % PF_DONUT_COLORS.length];
     return `
       <tr>
-        <td><strong>${p.ticker}</strong><div style="font-size:9px;color:var(--text3)">${p.sector || "—"}</div></td>
-        <td>${(p.shares || 0).toLocaleString("en-US", {maximumFractionDigits:4})}</td>
+        <td>
+          <div class="pf-h-sym">${p.ticker}</div>
+          <div class="pf-h-sub">${p.sector || "—"}</div>
+        </td>
+        <td>${(p.shares || 0).toLocaleString("en-US", {maximumFractionDigits: 4})}</td>
         <td>${fmtPrice(p.avg_cost)}</td>
         <td>${fmtPrice(p.price)}</td>
         <td class="${dayCls}">${fmtPct(p.day_change_pct)}</td>
         <td>${fmtPrice(p.value)}</td>
-        <td>${fmtPct(p.weight)}</td>
-        <td class="${uplCls}">${fmtPrice(p.unrealized_pl)}</td>
-        <td class="${uplCls}">${fmtPct(p.unrealized_pl_pct)}</td>
+        <td class="${uplCls}">${fmtPrice(p.unrealized_pl)} <span style="font-size:9px;opacity:0.7">(${fmtPct(p.unrealized_pl_pct)})</span></td>
+        <td>
+          <div style="display:flex;align-items:center;gap:6px;justify-content:flex-end">
+            <div class="pf-h-bar-wrap"><div class="pf-h-bar" style="width:${weightPct}%;background:${color}"></div></div>
+            <span style="font-size:10px;color:var(--text2);min-width:32px;text-align:right">${weightPct}%</span>
+          </div>
+        </td>
         <td>${fmtNum(p.beta, 2)}</td>
-        <td>${fmtNum(p.composite_z, 2)}</td>
         <td class="${sigCls}">${p.signal || "—"}</td>
-        <td><button class="pill" style="padding:3px 8px;font-size:9px" data-rm="${p.ticker}">Remove</button></td>
+        <td>
+          <div class="pf-h-actions">
+            <button class="pf-act pf-act-buy"  data-buy="${p.ticker}"  data-price="${p.price ?? ""}">BUY</button>
+            <button class="pf-act pf-act-sell" data-sell="${p.ticker}">SELL</button>
+          </div>
+        </td>
       </tr>`;
   }).join("");
 
-  // Sector exposure mini-table with inline weight bars.
+  tableEl.innerHTML = `
+    <table class="pf-holdings-table">
+      <thead><tr>
+        <th>Symbol</th><th>Shares</th><th>Avg Cost</th><th>Price</th>
+        <th>Day %</th><th>Value</th><th>Unrl P&amp;L</th>
+        <th>Weight</th><th>β</th><th>Signal</th><th></th>
+      </tr></thead>
+      <tbody>${rows}</tbody>
+    </table>`;
+
+  // Donut + legend. Sort by weight desc so the biggest slice starts at 12 o'clock.
+  const sorted = [...positions].sort((a, b) => (b.weight || 0) - (a.weight || 0));
+  donutEl.innerHTML = _pfDonut(sorted, t.value || 0);
+  donutLegEl.innerHTML = sorted.slice(0, 8).map((p, i) => {
+    const color = PF_DONUT_COLORS[i % PF_DONUT_COLORS.length];
+    return `<div class="pf-leg">
+      <div class="pf-leg-dot" style="background:${color}"></div>
+      <div class="pf-leg-sym">${p.ticker}</div>
+      <div class="pf-leg-pct">${((p.weight || 0) * 100).toFixed(1)}%</div>
+      <div class="pf-leg-val">${fmtPrice(p.value)}</div>
+    </div>`;
+  }).join("") + (sorted.length > 8
+    ? `<div class="pf-leg" style="opacity:0.6"><div class="pf-leg-dot" style="background:#666"></div><div class="pf-leg-sym">+${sorted.length - 8} more</div><div></div><div></div></div>`
+    : "");
+
+  // Sector exposure — same data as before, in the new card.
   const sectorRows = (analytics.sector_exposure || []).map(s => `
     <tr>
-      <td class="lcol"><strong>${s.sector}</strong></td>
+      <td><strong>${s.sector}</strong></td>
       <td>${fmtPrice(s.value)}</td>
       <td>${fmtPct(s.weight)}</td>
-      <td><div style="background:rgba(76,175,80,0.35);height:6px;width:${Math.max(2, (s.weight||0)*100).toFixed(1)}%;border-radius:2px"></div></td>
+      <td><div style="background:rgba(0,255,170,0.35);height:5px;width:${Math.max(2, (s.weight||0)*100).toFixed(1)}%;border-radius:2px"></div></td>
     </tr>`).join("");
+  sectorsEl.innerHTML = `
+    <table>
+      <thead><tr><th>Sector</th><th>Value</th><th>Weight</th><th></th></tr></thead>
+      <tbody>${sectorRows || `<tr><td colspan="4" class="placeholder">no sectors</td></tr>`}</tbody>
+    </table>`;
 
-  tableEl.innerHTML = `
-    <div class="pf-grid">
-      <div>
-        <div class="pf-section-label">Positions</div>
-        <table class="modal-table">
-          <thead><tr>
-            <th class="lcol">Ticker</th><th>Shares</th><th>Avg Cost</th><th>Price</th>
-            <th>Day %</th><th>Value</th><th>Weight</th>
-            <th>Unrl P&amp;L</th><th>Unrl %</th>
-            <th>β</th><th>Z</th><th>Signal</th><th></th>
-          </tr></thead>
-          <tbody>${rows}</tbody>
-        </table>
-      </div>
-      <div>
-        <div class="pf-section-label">Sector Exposure</div>
-        <table class="modal-table">
-          <thead><tr>
-            <th class="lcol">Sector</th><th>Value</th><th>%</th><th></th>
-          </tr></thead>
-          <tbody>${sectorRows || `<tr><td colspan="4" class="placeholder">no sectors</td></tr>`}</tbody>
-        </table>
-      </div>
-    </div>`;
+  // Risk panel
+  riskEl.innerHTML = _pfRiskGrid(t, positions);
+  if (riskBadgeEl) {
+    // Crude overall: bad concentration OR high beta = "ELEVATED", otherwise "MODERATE".
+    const top2 = [...positions].map(p => p.weight || 0).sort((a, b) => b - a).slice(0, 2).reduce((a, b) => a + b, 0);
+    const elevated = top2 > 0.5 || (t.weighted_beta || 0) > 1.4;
+    riskBadgeEl.textContent = elevated ? "ELEVATED" : "MODERATE";
+    riskBadgeEl.className = "pf-badge " + (elevated ? "pf-badge-r" : "pf-badge-w");
+  }
 
-  // Bind remove buttons.
-  tableEl.querySelectorAll("button[data-rm]").forEach(btn => {
+  // Wire BUY → prefill add-position form, scroll into view, focus shares input.
+  // Wire SELL → confirm + remove the position entirely.
+  tableEl.querySelectorAll("button[data-buy]").forEach(btn => {
+    btn.addEventListener("click", () => {
+      const ticker = btn.dataset.buy;
+      const price  = btn.dataset.price;
+      const tEl = document.getElementById("pf-ticker");
+      const sEl = document.getElementById("pf-shares");
+      const cEl = document.getElementById("pf-cost");
+      if (tEl) tEl.value = ticker;
+      if (cEl && price && !cEl.value) cEl.value = price;
+      if (sEl) { sEl.focus(); sEl.select(); }
+      tEl?.scrollIntoView({ behavior: "smooth", block: "center" });
+    });
+  });
+  tableEl.querySelectorAll("button[data-sell]").forEach(btn => {
     btn.addEventListener("click", async () => {
+      const ticker = btn.dataset.sell;
+      if (!confirm(`Remove ${ticker} from your portfolio? (This isn't a partial sell — it deletes the position.)`)) return;
       btn.disabled = true;
-      await Portfolio.remove(btn.dataset.rm);
+      await Portfolio.remove(ticker);
       _renderPortfolio();
     });
   });
