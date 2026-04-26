@@ -110,6 +110,7 @@ def refresh_once(task: str, period: str, batch_size: int):
                 cache_ts = merged.index[-1].isoformat() if len(merged.index) else now
                 print(f"[{now}] cache merged: rows={merged.shape[0]} cols={merged.shape[1]} "
                       f"intraday_refreshed={len(universe)} ts={cache_ts}")
+                _rebuild_snapshot_safe()
                 return True
             except Exception as exc:
                 print(f"[{now}] merge failed ({exc}); falling back to overwrite")
@@ -118,7 +119,25 @@ def refresh_once(task: str, period: str, batch_size: int):
     de.save_market_data_cache(fresh)
     print(f"[{now}] cache refreshed: rows={fresh.shape[0]} cols={fresh.shape[1]} "
           f"universe_requested={len(universe)}")
+
+    # Rebuild the dashboard snapshot so the next web request hits a hot
+    # snapshot. On Heroku the release dyno does this and persists it to
+    # Postgres; the web dyno then loads it from Postgres at startup.
+    _rebuild_snapshot_safe()
     return True
+
+
+def _rebuild_snapshot_safe() -> None:
+    """Force-rebuild the dashboard snapshot. Safe to call after every cache
+    refresh — failures are logged, never raised."""
+    try:
+        from core import snapshot as snap
+        snap.invalidate()
+        s = snap.get_snapshot(force_rebuild=True)
+        errs = len(s.get("errors", {}) or {})
+        print(f"[snapshot] post-refresh rebuild ok build_seconds={s.get('build_seconds')} errors={errs}")
+    except Exception as exc:
+        print(f"[snapshot] post-refresh rebuild failed (non-fatal): {exc}")
 
 
 def run_worker(interval_seconds, period, batch_size, task: str):
@@ -140,9 +159,9 @@ def parse_args():
     parser.add_argument("--once", action="store_true", help="Run a single refresh and exit (cron-friendly)")
     parser.add_argument(
         "--task",
-        choices=["daily", "intraday", "quotes_warm"],
+        choices=["daily", "intraday", "quotes_warm", "snapshot"],
         default="daily",
-        help="Which slice of the universe to refresh",
+        help="Which slice of the universe to refresh. 'snapshot' rebuilds only the dashboard snapshot from the existing cache (no yfinance calls).",
     )
     return parser.parse_args()
 
@@ -150,6 +169,12 @@ def parse_args():
 if __name__ == "__main__":
     args = parse_args()
     if args.once:
+        # 'snapshot' task is special — it skips the yfinance fetch entirely
+        # and just rebuilds the dashboard snapshot from whatever is in cache.
+        # Useful as a cheap Heroku Scheduler job to keep the snapshot warm.
+        if args.task == "snapshot":
+            _rebuild_snapshot_safe()
+            raise SystemExit(0)
         ok = refresh_once(task=args.task, period=args.period, batch_size=max(10, min(100, args.batch_size)))
         # Exit 0 on success, 1 on empty refresh — Heroku release phase will
         # ABORT the deploy on non-zero, which is exactly what we want.

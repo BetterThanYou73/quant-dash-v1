@@ -52,6 +52,69 @@ async function apiPost(path, body) {
   return res.json();
 }
 
+// =========================================================================
+// 1a. SNAPSHOT BOOTSTRAP — single-request page warm-up
+// =========================================================================
+//
+// /api/snapshot bundles the slow, read-mostly cards (signals, sectors,
+// regime SPY, macro, ticker bar quotes, default pair) into one payload
+// that the server pre-computes and caches. By fetching it ONCE on boot
+// and consuming the bundled payloads in each loadX() call, we replace
+// ~10 parallel HTTP round-trips with a single ~300 ms request.
+//
+// `consume(key)` is one-shot per key: the first loader to ask gets the
+// snapshot payload and clears that slot. The Scheduler's subsequent
+// refresh ticks then go through the live per-card endpoints as normal.
+// This keeps "freshness on user interaction" while killing the cold-start
+// thundering-herd that was tripping Heroku's H12/H13 router timeouts.
+const Snapshot = (() => {
+  let cards = null;          // { signals, sectors, regime_spy, macro, quotes, pair_default }
+  let builtAt = null;        // server-side build timestamp
+  let watchlistAtBuild = null;
+
+  async function bootstrap() {
+    try {
+      const t0 = performance.now();
+      const data = await apiGet("/api/snapshot");
+      cards = {
+        signals:      data.signals,
+        sectors:      data.sectors,
+        regime_spy:   data.regime_spy,
+        macro:        data.macro,
+        quotes:       data.quotes || {},
+        pair_default: data.pair_default,
+      };
+      builtAt = data.built_at_utc;
+      watchlistAtBuild = (data.default_watchlist || []).map(s => s.toUpperCase()).sort().join(",");
+      console.log(`[snapshot] bootstrap ok in ${(performance.now() - t0).toFixed(0)}ms — keys=${Object.keys(cards).filter(k => cards[k]).join(",")}`);
+    } catch (e) {
+      // Non-fatal: each loadX falls back to its individual endpoint.
+      console.warn(`[snapshot] bootstrap failed (will fall back to per-card endpoints): ${e.message}`);
+    }
+  }
+
+  // Returns the bundled payload for `key` once, then clears it. Subsequent
+  // calls return null so the live endpoint takes over.
+  function consume(key) {
+    if (!cards) return null;
+    const v = cards[key];
+    cards[key] = null;
+    return v || null;
+  }
+
+  // Same as consume() but only returns the value if the caller's watchlist
+  // matches the watchlist the snapshot was built for. Used by loadSignals
+  // to avoid serving the wrong tickers when the user has a custom set.
+  function consumeIfWatchlistMatches(key, callerWatchlist) {
+    if (!cards) return null;
+    const wantKey = (callerWatchlist || []).map(s => s.toUpperCase()).sort().join(",");
+    if (wantKey !== watchlistAtBuild) return null;
+    return consume(key);
+  }
+
+  return { bootstrap, consume, consumeIfWatchlistMatches };
+})();
+
 function setStatus(state, title) {
   const dot = document.getElementById("status-dot");
   dot.classList.remove("stale", "dead");
@@ -649,8 +712,12 @@ async function loadSignals() {
     return;
   }
   try {
+    // Snapshot fast-path: if the user's watchlist still matches the
+    // server-baked default, render from the bundled payload instead of
+    // making an expensive cross-sectional rank request.
+    const fromSnap = Snapshot.consumeIfWatchlistMatches("signals", enabled);
     const qs = `?watchlist=${encodeURIComponent(enabled.join(","))}`;
-    const data = await apiGet(`/api/signals${qs}`);
+    const data = fromSnap || await apiGet(`/api/signals${qs}`);
     AppState.lastSignals = data.results;
     // Stash the symbol -> name map so the watchlist can show company names
     // without an extra round-trip.
@@ -676,9 +743,15 @@ async function loadSignals() {
 
 const TICKER_BAR_SYMS = ["SPY", "QQQ", "NVDA", "AAPL", "TSLA"];
 async function loadTickerBar() {
-  const results = await Promise.allSettled(
-    TICKER_BAR_SYMS.map(s => apiGet(`/api/quote/${s}?lookback=21`))
-  );
+  // Snapshot fast-path: the server pre-bakes the same tickers.
+  const baked = Snapshot.consume("quotes");
+  const results = baked
+    ? TICKER_BAR_SYMS.map(s => baked[s]
+        ? { status: "fulfilled", value: baked[s] }
+        : { status: "rejected" })
+    : await Promise.allSettled(
+        TICKER_BAR_SYMS.map(s => apiGet(`/api/quote/${s}?lookback=21`))
+      );
   document.getElementById("ticker-bar").innerHTML = results.map((r, i) => {
     const sym = TICKER_BAR_SYMS[i];
     if (r.status !== "fulfilled") {
@@ -930,7 +1003,7 @@ async function loadSectors() {
   const meta = document.getElementById("sectors-meta");
   if (!body) return;
   try {
-    const data = await apiGet("/api/sectors");
+    const data = Snapshot.consume("sectors") || await apiGet("/api/sectors");
     if (!data.results || !data.results.length) {
       body.innerHTML = `<div class="placeholder">No sectors yet.</div>`;
       return;
@@ -987,7 +1060,10 @@ async function loadRegime() {
 
   try {
     body.innerHTML = `<div class="placeholder">Loading regime…</div>`;
-    const data = await apiGet(`/api/regime?ticker=${encodeURIComponent(sym)}`);
+    // Snapshot fast-path is only valid for SPY — the bundled regime card
+    // is always built against SPY since that's the dashboard default.
+    const fromSnap = (sym === "SPY") ? Snapshot.consume("regime_spy") : null;
+    const data = fromSnap || await apiGet(`/api/regime?ticker=${encodeURIComponent(sym)}`);
     const code = data.regime.code;
     const cls = code === "BULL" ? "bull" : code === "BEAR" ? "bear" : "mixed";
     if (badge) {
@@ -1062,7 +1138,7 @@ async function loadMacro() {
   const meta = document.getElementById("macro-meta");
   if (!body) return;
   try {
-    const data = await apiGet("/api/macro");
+    const data = Snapshot.consume("macro") || await apiGet("/api/macro");
     if (meta) meta.textContent = `${data.results.length} indicators`;
     const colorClass = (n) => n == null ? "flat" : n > 0 ? "up" : n < 0 ? "dn" : "flat";
     const fmtChg = (n) => n == null ? "—" : (n >= 0 ? "+" : "") + n.toFixed(1) + "%";
@@ -1438,6 +1514,13 @@ document.addEventListener("DOMContentLoaded", () => {
   // One-shot at boot: pairs runs only when user clicks Run.
   loadPairs();
 
+  // Kick off the snapshot bootstrap fetch BEFORE registering scheduler tasks.
+  // The Scheduler's first _tick() runs synchronously inside .start(); by the
+  // time those load* functions hit Snapshot.consume(), this fetch needs to
+  // have populated the cards. We await it so the first paint is one HTTP
+  // round-trip instead of ~10 parallel cold-start requests.
+  Snapshot.bootstrap().finally(() => {
+
   // -------- Scheduler tasks --------
   // Cadences are tuned per-resource to balance freshness vs API cost.
   // Picked roughly by "how often does this dataset actually change?":
@@ -1462,4 +1545,5 @@ document.addEventListener("DOMContentLoaded", () => {
   Scheduler.register("regime",   loadRegime,     120_000, { keyFn: tickerKey });
   Scheduler.register("news",     loadNews,       180_000, { keyFn: tickerKey });
   Scheduler.start();
+  });
 });

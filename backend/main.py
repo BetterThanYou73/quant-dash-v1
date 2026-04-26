@@ -16,11 +16,13 @@ import os
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.middleware.gzip import GZipMiddleware
+from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
 
 # We import from `core` — the pure-Python layer with no web/UI dependencies.
 # This is the seam that lets us swap Streamlit out without rewriting the math.
 from core import data_engine as de
+from core import snapshot as snap
 
 # Route modules. Each one defines an APIRouter we mount below.
 from backend import routes_signals
@@ -68,6 +70,22 @@ def _preload_cache():
         # Don't crash the dyno if the cache isn't available yet — endpoints
         # will surface a clear 503/422 message when called.
         print(f"[startup] cache preload failed: {exc}")
+
+
+# --- Snapshot preload -----------------------------------------------------
+# After the market-data cache is hot, also pre-build the dashboard
+# snapshot so the very first /api/snapshot hit is served from the in-memory
+# memo (sub-100 ms) instead of doing a 5-15 s rebuild on the user's request.
+# This is the single biggest UX win on Heroku Basic: the page renders from
+# one cached blob instead of stacking 8 parallel computes.
+@app.on_event("startup")
+def _preload_snapshot():
+    try:
+        s = snap.get_snapshot()
+        errors = s.get("errors", {}) or {}
+        print(f"[startup] snapshot preloaded: build_seconds={s.get('build_seconds')} errors={len(errors)}")
+    except Exception as exc:
+        print(f"[startup] snapshot preload failed: {exc}")
 
 
 # --- CORS -----------------------------------------------------------------
@@ -157,6 +175,32 @@ def cache_status():
         "rows": int(data.shape[0]) if not data.empty else 0,
         "columns": int(data.shape[1]) if not data.empty else 0,
     }
+
+
+# --- Snapshot endpoint ----------------------------------------------------
+# Single-request dashboard payload. Bundles ~10 individual endpoints into
+# one cached JSON blob. The frontend should call this *first* on page load
+# and only fall back to per-card endpoints when the user changes parameters
+# (custom watchlist, different ticker, custom pair).
+#
+# Cache-Control headers:
+#   - max-age=60        : browsers cache for 60 s  (snappy back-button nav)
+#   - s-maxage=60       : shared caches/CDNs cache for 60 s
+#   - stale-while-revalidate=600 : serve stale up to 10 min while revalidating
+#                                   in the background — eliminates user-visible
+#                                   latency when the snapshot is being rebuilt.
+@app.get("/api/snapshot")
+def get_snapshot_endpoint():
+    """Return the bundled dashboard snapshot.
+
+    Internally calls core.snapshot.get_snapshot() which is memoized for
+    SNAPSHOT_TTL_SECONDS (5 min). On Heroku, also persisted to Postgres
+    so dyno restarts and sibling dynos can reuse a recent build.
+    """
+    payload = snap.get_snapshot()
+    response = JSONResponse(content=payload)
+    response.headers["Cache-Control"] = "public, max-age=60, s-maxage=60, stale-while-revalidate=600"
+    return response
 
 
 # --- Static frontend ------------------------------------------------------
