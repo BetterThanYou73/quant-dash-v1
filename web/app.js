@@ -370,11 +370,26 @@ function confidenceTier(pct) {
   return "low";
 }
 
+// Signal label → strength rank. Higher = more bullish. Used so clicking
+// the Signal header sorts by conviction (Strong Buy on top in desc) instead
+// of alphabetically (which would put "Avoid" first — useless).
+const SIGNAL_RANK = {
+  "Strong Buy":        5,
+  "Buy":               4,
+  "Watch":             3,
+  "Avoid":             2,
+  "High Risk":         1,
+  "Insufficient Data": 0,
+};
+
 // Maps display column → key in the row payload (MFC schema).
 // Setting `numeric: true` triggers numeric sort instead of string sort.
+// Setting `sortValue` lets a column compute a custom sort key (e.g. Signal
+// uses the strength rank above instead of the raw label string).
 const SIGNAL_COLUMNS = [
   { key: "Ticker",            label: "Symbol",        numeric: false },
-  { key: "Signal",            label: "Signal",        numeric: false },
+  { key: "Signal",            label: "Signal",        numeric: true,
+    sortValue: r => SIGNAL_RANK[r.Signal] ?? -1 },
   { key: "Composite_Z",       label: "Composite",     numeric: true  },
   { key: "Price",             label: "Price",         numeric: true  },
   { key: "Momentum_12_1",     label: "Mom 12-1",      numeric: true  },
@@ -390,8 +405,10 @@ function sortRows(rows) {
   const meta = SIGNAL_COLUMNS.find(c => c.key === col);
   if (!meta) return rows;
   const mult = dir === "asc" ? 1 : -1;
+  // Custom resolver wins; otherwise fall back to the raw column value.
+  const resolve = meta.sortValue || (r => r[col]);
   return [...rows].sort((a, b) => {
-    const av = a[col], bv = b[col];
+    const av = resolve(a), bv = resolve(b);
     if (av == null) return 1;            // nulls sink to bottom regardless of direction
     if (bv == null) return -1;
     if (meta.numeric) return (av - bv) * mult;

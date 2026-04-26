@@ -21,9 +21,11 @@ import core.data_engine as de
 
 
 # SPY is the benchmark for the alpha factor and MUST be in the cache.
-# We hard-code it here rather than putting it in SP500.csv because SP500.csv
-# is meant to be the index constituents only.
+# QQQ is included so the header ticker bar (Nasdaq-100 pulse) can render.
+# Both are hard-coded here rather than added to SP500.csv — that file is
+# meant to be the index constituents only.
 BENCHMARK_TICKER = "SPY"
+EXTRA_INDICES = ["QQQ"]
 
 
 def build_universe():
@@ -44,7 +46,7 @@ def build_universe():
         .tolist()
     )
     extras = de.read_user_tickers()
-    return sorted(set(sp500 + [BENCHMARK_TICKER] + extras))
+    return sorted(set(sp500 + [BENCHMARK_TICKER] + EXTRA_INDICES + extras))
 
 
 def run_worker(interval_seconds, period, batch_size):
