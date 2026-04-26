@@ -5,7 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>QuantDash — Quantitative Dashboard</title>
 <link href="https://fonts.googleapis.com/css2?family=Space+Mono:ital,wght@0,400;0,700;1,400&family=Syne:wght@400;600;700;800&display=swap" rel="stylesheet">
-<link rel="stylesheet" href="styles.css?v=15">
+<link rel="stylesheet" href="styles.css?v=17">
 </head>
 <body>
 
@@ -321,6 +321,25 @@
        Mix of real metrics and "Phase 2c" placeholders styled the same so the layout feels intentional. -->
   <div id="pf-stat-strip" class="stat-strip pf-stat-strip"></div>
 
+  <!-- Equity curve — current basket backtested against historical close prices,
+       with SPY rebased to the same starting dollar. Driven by /api/portfolio/history. -->
+  <div class="pf-card pf-perf-card">
+    <div class="pf-card-header">
+      <div class="pf-card-title">Performance</div>
+      <span class="pf-badge pf-badge-b" id="pf-perf-meta">CURRENT BASKET</span>
+      <div class="pf-perf-tabs" id="pf-perf-tabs">
+        <button class="pf-perf-tab" data-period="1m">1M</button>
+        <button class="pf-perf-tab" data-period="3m">3M</button>
+        <button class="pf-perf-tab" data-period="6m">6M</button>
+        <button class="pf-perf-tab active" data-period="1y">1Y</button>
+        <button class="pf-perf-tab" data-period="2y">2Y</button>
+      </div>
+    </div>
+    <div class="pf-perf-body">
+      <canvas id="pf-perf-chart"></canvas>
+    </div>
+  </div>
+
   <!-- Row 1 — Holdings table (left) + donut breakdown (right). The donut is rendered
        client-side as inline SVG using the same colors as the legend. -->
   <div class="pf-row pf-row-2-1">
@@ -454,6 +473,6 @@
 
 <!-- Order matters: config first (sets API_BASE), then app reads window.QD_CONFIG -->
 <script src="config.js"></script>
-<script src="app.js?v=15"></script>
+<script src="app.js?v=17"></script>
 </body>
 </html>

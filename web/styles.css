@@ -874,7 +874,7 @@ nav {
    #pf-table is the scroll container so the table can overflow horizontally
    on narrow widths instead of clipping the action buttons off the card edge. */
 #pf-table { overflow-x: auto; padding: 0; }
-.pf-holdings-table { width: 100%; min-width: 880px; border-collapse: collapse; font-size: 11px; }
+.pf-holdings-table { width: 100%; min-width: 880px; border-collapse: separate; border-spacing: 0; font-size: 11px; }
 .pf-holdings-table th {
   font-size: 9px; letter-spacing: 1px; text-transform: uppercase;
   color: var(--text3); padding: 8px 8px; text-align: right;
@@ -887,6 +887,35 @@ nav {
 .pf-holdings-table td:first-child { text-align: left; padding-left: 16px; }
 .pf-holdings-table td:last-child  { padding-right: 16px; }
 .pf-holdings-table tr:hover td { background: rgba(0,255,170,0.025); }
+
+/* Sticky action column — keeps BUY/SELL visible even when the table
+   overflows horizontally on narrow viewports. The bg2 background
+   matches the card so it reads as part of the card edge, not floating. */
+.pf-holdings-table th:last-child,
+.pf-holdings-table td:last-child {
+  position: sticky; right: 0;
+  background: var(--bg2);
+  box-shadow: -8px 0 12px -8px rgba(0,0,0,0.55);
+  z-index: 2;
+}
+.pf-holdings-table tr:hover td:last-child { background: #14201d; }
+.pf-holdings-table th:last-child { background: rgba(15,22,20,0.98); }
+
+/* Performance card \u2014 equity curve with benchmark overlay. The canvas
+   needs an explicit height because Chart.js with maintainAspectRatio:false
+   collapses to 0 inside flex/grid layouts otherwise. */
+.pf-perf-card { margin-bottom: 18px; }
+.pf-perf-tabs { display: flex; gap: 4px; margin-left: auto; }
+.pf-perf-tab {
+  padding: 4px 10px; font-size: 9px; letter-spacing: 1px; text-transform: uppercase;
+  background: transparent; color: var(--text3); border: 1px solid var(--border);
+  border-radius: 3px; cursor: pointer; font-family: 'Space Mono', monospace; transition: all .15s;
+}
+.pf-perf-tab:hover { color: var(--text); border-color: rgba(0,255,170,0.30); }
+.pf-perf-tab.active { background: rgba(0,255,170,0.12); color: var(--success); border-color: rgba(0,255,170,0.35); }
+.pf-perf-body { padding: 12px 16px 16px; height: 260px; position: relative; }
+.pf-perf-body canvas { width: 100% !important; height: 100% !important; }
+
 .pf-h-sym { font-weight: 700; color: var(--text); font-family: 'Space Mono', monospace; }
 .pf-h-sub { font-size: 9px; color: var(--text3); }
 .pf-h-bar-wrap { width: 60px; height: 4px; background: rgba(255,255,255,0.06); border-radius: 2px; overflow: hidden; display: inline-block; vertical-align: middle; margin-right: 6px; }

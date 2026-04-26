@@ -227,6 +227,41 @@ def delete_position(ticker: str, request: Request, response: Response) -> dict[s
     return {"ok": True, "deleted": sym}
 
 
+class PositionPatch(BaseModel):
+    shares: float = Field(..., gt=0)
+
+
+@router.patch("/{ticker}")
+def patch_position(ticker: str, body: PositionPatch, request: Request, response: Response) -> dict[str, Any]:
+    """Set the share count for an existing position to an exact number.
+
+    Used by the partial-sell flow in the UI: if a user sells some but
+    not all of their shares, the cost basis stays the same (you're not
+    averaging in, you're trimming) so we just update `shares`. Selling
+    everything goes through DELETE instead.
+    """
+    kind, oid = _resolve_owner(request, response)
+    sym = _validate_ticker(ticker)
+    existing = pdb.list_positions(kind, oid)
+    cur = next((p for p in existing if p["ticker"] == sym), None)
+    if cur is None:
+        raise HTTPException(status_code=404, detail=f"{sym} not in portfolio")
+    if body.shares >= float(cur["shares"]):
+        # Don't let PATCH grow the position \u2014 use POST for that so cost
+        # basis is recomputed correctly via weighted average.
+        raise HTTPException(
+            status_code=400,
+            detail=f"PATCH only reduces shares; you own {cur['shares']}, asked for {body.shares}. Use POST to add.",
+        )
+    # Replace via the same upsert path: delete + re-insert with the
+    # original avg_cost. (upsert_position would weighted-average if the
+    # row exists, which we don't want here.)
+    pdb.delete_position(kind, oid, sym)
+    result = pdb.upsert_position(kind, oid, sym, body.shares, float(cur["avg_cost"]))
+    _bump_analytics_cache(f"{kind}:{oid}")
+    return {"ok": True, "position": result}
+
+
 @router.put("")
 def replace_all(body: BulkPositions, request: Request, response: Response) -> dict[str, Any]:
     """Atomically replace the entire portfolio.
@@ -289,7 +324,7 @@ def _positions_key(positions: list[dict]) -> str:
 
 
 def _bump_analytics_cache(prefix: str) -> None:
-    """Invalidate cached analytics for an owner.
+    """Invalidate cached analytics + history for an owner.
 
     `prefix` should be either the legacy device_id (back-compat) or
     the new \"kind:oid\" form. We match on startswith() so both work.
@@ -297,6 +332,16 @@ def _bump_analytics_cache(prefix: str) -> None:
     with _analytics_lock:
         for k in [k for k in _analytics_cache if k.startswith(prefix + ":") or k.startswith(prefix)]:
             _analytics_cache.pop(k, None)
+    # History cache is keyed the same way (kind:oid:period:hash) — drop
+    # any matching entries so the equity curve refreshes after edits.
+    try:
+        with _history_lock:
+            for k in [k for k in _history_cache if k.startswith(prefix + ":") or k.startswith(prefix)]:
+                _history_cache.pop(k, None)
+    except NameError:
+        # _history_lock isn't defined yet during early imports \u2014 first
+        # call after module load will see it.
+        pass
 
 
 def _compute_analytics(positions: list[dict]) -> dict:
@@ -501,6 +546,149 @@ def analytics(request: Request, response: Response) -> dict[str, Any]:
             oldest = sorted(_analytics_cache.items(), key=lambda kv: kv[1][0])[:64]
             for k, _ in oldest:
                 _analytics_cache.pop(k, None)
+
+    response.headers["Cache-Control"] = "private, max-age=30"
+    return payload
+
+
+# ---- equity curve -------------------------------------------------------
+#
+# /api/portfolio/history backtests the user's CURRENT shares against the
+# cached daily close prices to produce a portfolio-value time series for
+# charting on the portfolio page. We don't have a transaction history
+# yet (Phase 2c will add it), so this is a "what would my current basket
+# have done" view, not true historical equity. We disclose that in the
+# response (`mode: "current_basket_backtest"`).
+#
+# Cheap: O(rows × tickers) numpy. ~5ms for 50 positions × 250 days.
+
+_HISTORY_TTL = 60.0
+_history_cache: dict[str, tuple[float, dict]] = {}
+_history_lock = threading.Lock()
+
+_PERIOD_DAYS = {"1m": 22, "3m": 66, "6m": 132, "1y": 252, "2y": 504, "5y": 1260, "max": 100000}
+
+
+@router.get("/history")
+def portfolio_history(
+    request: Request,
+    response: Response,
+    period: str = "1y",
+) -> dict[str, Any]:
+    """Daily portfolio value series + benchmark comparison.
+
+    Uses CURRENT shares applied backward against cached close prices.
+    Tickers without enough history are skipped (and listed in
+    `diagnostics.skipped`); the curve still renders for the rest.
+    """
+    kind, oid = _resolve_owner(request, response)
+    period = (period or "1y").lower()
+    if period not in _PERIOD_DAYS:
+        raise HTTPException(status_code=400, detail=f"invalid period: {period}")
+
+    positions = pdb.list_positions(kind, oid)
+    cache_key = f"{kind}:{oid}:{period}:{_positions_key(positions)}"
+    now = time.time()
+    with _history_lock:
+        hit = _history_cache.get(cache_key)
+        if hit and (now - hit[0]) < _HISTORY_TTL:
+            response.headers["Cache-Control"] = "private, max-age=30"
+            return hit[1]
+
+    if not positions:
+        payload = {
+            "period": period,
+            "mode": "current_basket_backtest",
+            "series": [],
+            "benchmark": _BENCHMARK_TICKER,
+            "diagnostics": {"skipped": [], "n_days": 0},
+        }
+        response.headers["Cache-Control"] = "private, max-age=30"
+        return payload
+
+    data, _ts = de.get_market_data()
+    if data.empty:
+        raise HTTPException(status_code=503, detail="No cached market data")
+    close_all = sig.extract_close_prices(data)
+    if close_all.empty:
+        raise HTTPException(status_code=503, detail="cache missing close prices")
+
+    days = _PERIOD_DAYS[period]
+    # Tail to the requested window. SP500.csv goes back ~2y in the
+    # default fetch, so "max" effectively == "2y" for now.
+    if days < len(close_all):
+        close_window = close_all.iloc[-days:]
+    else:
+        close_window = close_all
+
+    # Build a (days × tickers) frame aligned to the requested holdings.
+    skipped: list[str] = []
+    held: dict[str, float] = {}
+    for p in positions:
+        sym = p["ticker"]
+        if sym in close_window.columns:
+            s = close_window[sym].dropna()
+            # Need at least half the window to be useful, else skip
+            # (e.g. a brand-new IPO won't have a full year of data).
+            if len(s) >= max(5, len(close_window) // 2):
+                held[sym] = float(p["shares"])
+                continue
+        skipped.append(sym)
+
+    if not held:
+        payload = {
+            "period": period,
+            "mode": "current_basket_backtest",
+            "series": [],
+            "benchmark": _BENCHMARK_TICKER,
+            "diagnostics": {"skipped": skipped, "n_days": 0,
+                            "note": "No held tickers have enough history for this period"},
+        }
+        response.headers["Cache-Control"] = "private, max-age=30"
+        return payload
+
+    held_close = close_window[list(held.keys())].copy()
+    # Forward-fill so a single missing day doesn't punch a hole in the
+    # curve. Then drop any leading rows that are still all-NaN.
+    held_close = held_close.ffill().dropna(how="all")
+
+    # Portfolio value per day = sum_i (shares_i * close_i_day). NaNs
+    # become 0 contributions (rare after ffill), so the curve is robust
+    # to ticker-specific gaps.
+    shares_vec = np.array([held[c] for c in held_close.columns], dtype=float)
+    values = (held_close.values * shares_vec).sum(axis=1)
+
+    # Benchmark: rebase SPY to start at the same dollar value as the
+    # portfolio's first day, so the two lines are visually comparable.
+    bench_series = None
+    if _BENCHMARK_TICKER in close_window.columns:
+        b = close_window[_BENCHMARK_TICKER].reindex(held_close.index).ffill().bfill()
+        if not b.empty and b.iloc[0] and b.iloc[0] > 0 and values[0] > 0:
+            scale = float(values[0]) / float(b.iloc[0])
+            bench_series = (b.values * scale).tolist()
+
+    series = []
+    for i, idx in enumerate(held_close.index):
+        date_str = idx.strftime("%Y-%m-%d") if hasattr(idx, "strftime") else str(idx)[:10]
+        row = {"date": date_str, "value": _clean(float(values[i]))}
+        if bench_series is not None:
+            row["benchmark"] = _clean(float(bench_series[i]))
+        series.append(row)
+
+    payload = {
+        "period": period,
+        "mode": "current_basket_backtest",
+        "series": series,
+        "benchmark": _BENCHMARK_TICKER,
+        "diagnostics": {"skipped": skipped, "n_days": len(series)},
+    }
+
+    with _history_lock:
+        _history_cache[cache_key] = (now, payload)
+        if len(_history_cache) > 256:
+            oldest = sorted(_history_cache.items(), key=lambda kv: kv[1][0])[:64]
+            for k, _ in oldest:
+                _history_cache.pop(k, None)
 
     response.headers["Cache-Control"] = "private, max-age=30"
     return payload

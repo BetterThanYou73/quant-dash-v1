@@ -1401,6 +1401,19 @@ const Portfolio = {
     try { await apiDelete(`/api/portfolio/${encodeURIComponent(sym)}`); return true; }
     catch (_) { return false; }
   },
+  // Set shares to an exact number (used by partial-sell). Server keeps
+  // the existing avg_cost — selling shares doesn't change the cost basis
+  // of what's left.
+  async setShares(ticker, shares) {
+    const sym = (ticker || "").toUpperCase().trim();
+    if (!sym || !(shares > 0)) return { ok: false, error: "Need a positive share count." };
+    try {
+      const r = await apiSend(`/api/portfolio/${encodeURIComponent(sym)}`, "PATCH", { shares });
+      return { ok: true, position: r.position };
+    } catch (e) {
+      return { ok: false, error: e.message };
+    }
+  },
 };
 // Expose for the Auth module so login/logout can refresh the page after
 // a successful identity change. Auth lives in its own IIFE later in the
@@ -1696,11 +1709,172 @@ async function _renderPortfolio() {
   tableEl.querySelectorAll("button[data-sell]").forEach(btn => {
     btn.addEventListener("click", async () => {
       const ticker = btn.dataset.sell;
-      if (!confirm(`Remove ${ticker} from your portfolio? (This isn't a partial sell — it deletes the position.)`)) return;
+      const row = positions.find(p => p.ticker === ticker);
+      const owned = row ? Number(row.shares) || 0 : 0;
+      if (owned <= 0) {
+        alert(`No shares of ${ticker} on record.`);
+        return;
+      }
+      const ans = prompt(
+        `Sell how many shares of ${ticker}?\n\n` +
+        `You currently own ${owned}. Enter a smaller number for a partial sell, or ${owned} (or "all") to remove the position entirely.`,
+        String(owned)
+      );
+      if (ans === null) return;
+      const trimmed = ans.trim().toLowerCase();
+      let qty;
+      if (trimmed === "all" || trimmed === "max") {
+        qty = owned;
+      } else {
+        qty = Number(trimmed);
+        if (!Number.isFinite(qty) || qty <= 0) {
+          alert("Enter a positive number of shares (or 'all').");
+          return;
+        }
+        if (qty > owned + 1e-9) {
+          alert(`You only own ${owned} shares of ${ticker}.`);
+          return;
+        }
+      }
       btn.disabled = true;
-      await Portfolio.remove(ticker);
+      // Tiny float tolerance so "5.00" vs 5 still triggers the full-sell branch.
+      if (Math.abs(qty - owned) < 1e-6) {
+        const ok = await Portfolio.remove(ticker);
+        if (!ok) { alert(`Failed to sell ${ticker}.`); btn.disabled = false; return; }
+      } else {
+        const remaining = owned - qty;
+        const r = await Portfolio.setShares(ticker, remaining);
+        if (!r.ok) { alert(`Failed to sell ${ticker}: ${r.error || "unknown error"}`); btn.disabled = false; return; }
+      }
       _renderPortfolio();
     });
+  });
+
+  // Performance chart \u2014 fetched separately so a slow history call doesn't
+  // block the rest of the page from rendering.
+  _renderPortfolioPerf().catch(() => { /* errors shown inline */ });
+}
+
+// Active period for the equity curve. Persisted in-module so re-renders
+// (after add/sell) keep the user's selection.
+let _PF_PERF_PERIOD = "1y";
+
+async function _renderPortfolioPerf() {
+  const canvas = document.getElementById("pf-perf-chart");
+  const metaEl = document.getElementById("pf-perf-meta");
+  const tabsEl = document.getElementById("pf-perf-tabs");
+  if (!canvas || !window.Chart) return;
+
+  // Wire tabs once.
+  if (tabsEl && !tabsEl.dataset.bound) {
+    tabsEl.dataset.bound = "1";
+    tabsEl.querySelectorAll(".pf-perf-tab").forEach(btn => {
+      btn.addEventListener("click", () => {
+        _PF_PERF_PERIOD = btn.dataset.period || "1y";
+        tabsEl.querySelectorAll(".pf-perf-tab").forEach(b => b.classList.toggle("active", b === btn));
+        _renderPortfolioPerf();
+      });
+    });
+  }
+  // Reflect current period selection on tabs.
+  tabsEl?.querySelectorAll(".pf-perf-tab").forEach(b => {
+    b.classList.toggle("active", b.dataset.period === _PF_PERF_PERIOD);
+  });
+
+  if (metaEl) metaEl.textContent = "LOADING\u2026";
+
+  let hist;
+  try {
+    hist = await apiGet(`/api/portfolio/history?period=${_PF_PERF_PERIOD}`);
+  } catch (e) {
+    if (metaEl) metaEl.textContent = `ERROR: ${e.message}`;
+    return;
+  }
+
+  const series = hist.series || [];
+  if (!series.length) {
+    if (metaEl) metaEl.textContent = "NO DATA YET";
+    destroyChart("pfperf");
+    const ctx = canvas.getContext("2d");
+    ctx.clearRect(0, 0, canvas.width, canvas.height);
+    return;
+  }
+
+  const labels = series.map(p => p.date);
+  const values = series.map(p => p.value);
+  const bench  = series.map(p => p.benchmark ?? null);
+  const hasBench = bench.some(v => v != null);
+
+  const start = values[0];
+  const end   = values[values.length - 1];
+  const totalRet = start > 0 ? (end / start - 1) : 0;
+  const up = totalRet >= 0;
+  const portColor  = up ? "#00ffaa" : "#ff4060";
+  const benchColor = "#7a9e94";
+
+  if (metaEl) {
+    let txt = `${_PF_PERF_PERIOD.toUpperCase()} \u00b7 ${up ? "+" : ""}${(totalRet * 100).toFixed(2)}%`;
+    if (hasBench) {
+      const bStart = bench.find(v => v != null);
+      const bEnd   = [...bench].reverse().find(v => v != null);
+      if (bStart && bEnd && bStart > 0) {
+        const bRet = bEnd / bStart - 1;
+        const alpha = totalRet - bRet;
+        txt += ` \u00b7 vs ${hist.benchmark || "SPY"} ${(alpha >= 0 ? "+" : "")}${(alpha * 100).toFixed(2)}%`;
+      }
+    }
+    if (hist.diagnostics?.skipped?.length) {
+      txt += ` \u00b7 skipped ${hist.diagnostics.skipped.join(",")}`;
+    }
+    metaEl.textContent = txt;
+  }
+
+  destroyChart("pfperf");
+  const datasets = [{
+    label: "Portfolio",
+    data: values,
+    borderColor: portColor,
+    backgroundColor: portColor + "18",
+    fill: true,
+    tension: 0.18,
+    pointRadius: 0,
+    borderWidth: 1.6,
+  }];
+  if (hasBench) {
+    datasets.push({
+      label: hist.benchmark || "SPY",
+      data: bench,
+      borderColor: benchColor,
+      backgroundColor: "transparent",
+      borderDash: [4, 4],
+      fill: false,
+      tension: 0.18,
+      pointRadius: 0,
+      borderWidth: 1.2,
+    });
+  }
+  chartRegistry["pfperf"] = new Chart(canvas, {
+    type: "line",
+    data: { labels, datasets },
+    options: {
+      responsive: true, maintainAspectRatio: false,
+      interaction: { mode: "index", intersect: false },
+      scales: {
+        x: { ticks: { maxTicksLimit: 8 }, grid: { display: false } },
+        y: {
+          grid: { color: "rgba(0,255,170,0.06)" },
+          ticks: { callback: (v) => "$" + Number(v).toLocaleString("en-US", { maximumFractionDigits: 0 }) },
+        },
+      },
+      plugins: {
+        legend: { display: hasBench, position: "bottom", labels: { boxWidth: 10, boxHeight: 2, padding: 12 } },
+        tooltip: {
+          callbacks: {
+            label: (ctx) => `${ctx.dataset.label}: $${Number(ctx.parsed.y).toLocaleString("en-US", { maximumFractionDigits: 2 })}`,
+          },
+        },
+      },
+    },
   });
 }
 
