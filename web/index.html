@@ -100,26 +100,47 @@
         </div>
       </div>
 
-      <!-- PRICE CHART — wired in step 6 (Chart.js) -->
+      <!-- PRICE CHART — Chart.js line chart. Ticker = whichever row is selected in the signals table. -->
       <div class="chart-card">
         <div class="card-header">
-          <div class="card-title">Price Chart</div>
-          <span class="card-badge badge-warn">STEP 6</span>
+          <div class="card-title">Price Chart — <span id="price-chart-ticker">…</span></div>
+          <span class="card-badge badge-blue" id="price-chart-meta">—</span>
+          <!-- Lookback selector. data-days drives the API call. -->
+          <div class="chart-tabs" style="padding:0;margin-left:auto">
+            <button class="chart-tab"        data-days="21">1M</button>
+            <button class="chart-tab active" data-days="63">3M</button>
+            <button class="chart-tab"        data-days="126">6M</button>
+            <button class="chart-tab"        data-days="252">1Y</button>
+          </div>
         </div>
-        <div class="placeholder">Real chart lands in step 6.</div>
+        <div class="chart-container">
+          <canvas id="price-chart"></canvas>
+        </div>
       </div>
 
     </div>
 
     <div class="right-col">
 
-      <!-- WATCHLIST — Step 5b (localStorage, no backend) -->
+      <!-- WATCHLIST — browser-local. Drives /api/signals via the `watchlist` query param. -->
       <div class="chart-card">
         <div class="card-header">
           <div class="card-title">Watchlist</div>
-          <span class="card-badge badge-warn">STEP 5b</span>
+          <span class="card-badge badge-blue" id="watchlist-meta">—</span>
         </div>
-        <div class="placeholder">Add / remove / disable tickers (browser-local).</div>
+        <div class="watchlist-body">
+          <div class="watchlist-input-row">
+            <div class="autocomplete-wrap">
+              <input id="watchlist-input" class="field" placeholder="Search ticker or company…" maxlength="40" autocomplete="off">
+              <div id="watchlist-suggestions" class="autocomplete-list" hidden></div>
+            </div>
+            <button id="watchlist-add" class="pill cta" style="padding:5px 12px">Add</button>
+          </div>
+          <div id="watchlist-list"></div>
+          <div class="watchlist-actions">
+            <button id="watchlist-reset" class="pill" style="font-size:10px">Reset to default</button>
+          </div>
+        </div>
       </div>
 
       <!-- MARKET REGIME & VOL FORECAST — real ML, Step 6+ -->
@@ -155,13 +176,15 @@
       <div class="placeholder">Fed rate · CPI · GDP · VIX · oil · gold · USD.</div>
     </div>
 
-    <!-- RISK / CORRELATION — Step 6 -->
+    <!-- RISK / CORRELATION — pure CSS-grid heatmap of return correlations across the watchlist. -->
     <div class="chart-card">
       <div class="card-header">
         <div class="card-title">Risk &amp; Correlation</div>
-        <span class="card-badge badge-warn">STEP 6</span>
+        <span class="card-badge badge-blue" id="corr-meta">—</span>
       </div>
-      <div class="placeholder">Correlation heatmap + portfolio risk metrics.</div>
+      <div id="corr-body" class="chart-body">
+        <div class="placeholder">Loading correlation matrix…</div>
+      </div>
     </div>
 
   </div>
@@ -169,13 +192,25 @@
   <!-- SECONDARY ROW — pairs + news -->
   <div class="bottom-row">
 
-    <!-- PAIRS TRADING — Step 6 -->
+    <!-- PAIRS TRADING — two tickers, hedge ratio, spread + rolling z. -->
     <div class="chart-card" style="grid-column: span 2;">
       <div class="card-header">
         <div class="card-title">Pairs Trading</div>
-        <span class="card-badge badge-warn">STEP 6</span>
+        <span class="card-badge badge-blue" id="pairs-signal">—</span>
       </div>
-      <div class="placeholder">Spread + rolling z-score + entry/exit signal.</div>
+      <div class="controls-row">
+        <label>A <input id="pairs-a" class="field" value="KO"  maxlength="6"></label>
+        <label>B <input id="pairs-b" class="field" value="PEP" maxlength="6"></label>
+        <label>Lookback <input id="pairs-lookback" class="field" type="number" value="252" min="63" max="504"></label>
+        <label>Z window <input id="pairs-zwin" class="field" type="number" value="30" min="10" max="120"></label>
+        <label>Entry |z| <input id="pairs-entry" class="field" type="number" step="0.1" value="2.0"></label>
+        <label>Exit |z| <input id="pairs-exit" class="field" type="number" step="0.1" value="0.5"></label>
+        <button id="pairs-run" class="pill cta" style="padding:5px 14px">Run</button>
+        <span id="pairs-meta" style="color:var(--text3);font-size:10px;margin-left:auto">—</span>
+      </div>
+      <div class="chart-container" style="height:260px">
+        <canvas id="pairs-chart"></canvas>
+      </div>
     </div>
 
     <!-- NEWS — Step 9 (free tier news API) -->
@@ -190,7 +225,11 @@
   </div>
 </div>
 
-<!-- Order matters: config first, then app uses window.QD_CONFIG -->
+<!-- Chart.js from CDN — only JS dependency. UMD build, no module loader needed.
+     Pinned to v4.4.x. If CDN fails, charts won't render but the rest of the page still works. -->
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.7/dist/chart.umd.min.js"></script>
+
+<!-- Order matters: config first (sets API_BASE), then app reads window.QD_CONFIG -->
 <script src="config.js"></script>
 <script src="app.js"></script>
 </body>

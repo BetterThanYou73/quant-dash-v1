@@ -24,6 +24,7 @@ from backend import routes_signals
 from backend import routes_quote
 from backend import routes_pairs
 from backend import routes_risk
+from backend import routes_universe
 
 
 # --- App instance ---------------------------------------------------------
@@ -59,6 +60,7 @@ app.include_router(routes_signals.router)
 app.include_router(routes_quote.router)
 app.include_router(routes_pairs.router)
 app.include_router(routes_risk.router)
+app.include_router(routes_universe.router)
 
 
 @app.get("/api/health")

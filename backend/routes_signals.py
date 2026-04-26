@@ -100,10 +100,21 @@ def get_signals(
     if summary_df.empty:
         raise HTTPException(status_code=422, detail="No tickers had enough history to score")
 
-    # --- Enrich with sector ---------------------------------------------
+    # --- Enrich with sector + company name -----------------------------
+    # Pull from the built-in SP500.csv. For tickers added by the user that
+    # aren't in SP500 (e.g. POET), fall back to the user_meta sidecar
+    # populated by /api/cache/ensure. If still unknown, default gracefully.
     meta = de.get_ticker_metadata()
     sector_map = meta.set_index("Symbol")["Sector"].to_dict()
+    name_map = meta.set_index("Symbol")["Name"].to_dict()
+
+    user_meta = de.read_user_meta()
+    for sym, info in user_meta.items():
+        sector_map.setdefault(sym, info.get("sector") or "Unknown")
+        name_map.setdefault(sym, info.get("name") or sym)
+
     summary_df["Sector"] = summary_df["Ticker"].map(sector_map).fillna("Unknown")
+    summary_df["Name"] = summary_df["Ticker"].map(name_map).fillna(summary_df["Ticker"])
 
     # --- Shape for JSON ------------------------------------------------
     # Convert each row to a dict and clean NaN/Inf so the response validates.

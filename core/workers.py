@@ -20,22 +20,27 @@ def build_default_universe(sectors, max_sector_names):
     else:
         sector_symbols = []
 
-    return sorted(set(base + sector_symbols))
+    # Tickers the user added through the UI. We include them so the periodic
+    # refresh keeps their data fresh instead of letting it go stale.
+    user_added = de.read_user_tickers()
+
+    return sorted(set(base + sector_symbols + user_added))
 
 
 def run_worker(interval_seconds, period, sectors, max_sector_names):
-    tickers = build_default_universe(sectors, max_sector_names)
-    print(f"[worker] universe size: {len(tickers)}")
     print(f"[worker] refresh interval: {interval_seconds}s")
 
     while True:
+        # Re-read the user-added tickers each iteration so additions made
+        # while the worker is running get picked up on the next refresh.
+        tickers = build_default_universe(sectors, max_sector_names)
         now = datetime.utcnow().isoformat()
         data, cache_ts = de.refresh_market_data_cache(tickers, period=period)
 
         if data.empty:
             print(f"[{now}] refresh failed: no data returned")
         else:
-            print(f"[{now}] cache refreshed: {data.shape[0]} rows x {data.shape[1]} cols | ts={cache_ts}")
+            print(f"[{now}] cache refreshed: {data.shape[0]} rows x {data.shape[1]} cols | universe={len(tickers)} | ts={cache_ts}")
 
         time.sleep(interval_seconds)
 
