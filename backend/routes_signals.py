@@ -80,7 +80,7 @@ def get_signals(
         raise HTTPException(status_code=400, detail="watchlist resolved to zero tickers")
 
     # --- Load cache ---------------------------------------------------
-    data, cache_ts = de.load_cached_market_data()
+    data, cache_ts = de.get_market_data()
     if data.empty:
         raise HTTPException(
             status_code=503,

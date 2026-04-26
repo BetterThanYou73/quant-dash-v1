@@ -59,7 +59,7 @@ def get_sectors(
     Same pipeline as /api/signals but the result is grouped by GICS sector
     and aggregated, rather than returned per-ticker.
     """
-    data, cache_ts = de.load_cached_market_data()
+    data, cache_ts = de.get_market_data()
     if data.empty:
         raise HTTPException(status_code=503, detail="No cached market data.")
 

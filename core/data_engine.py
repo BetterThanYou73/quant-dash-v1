@@ -196,6 +196,62 @@ def load_cached_market_data():
     return pd.DataFrame(), cache_ts
 
 
+# --- In-process memo over load_cached_market_data ------------------------
+# Without this, every concurrent /api/* request that needs the cache
+# triggers its own Postgres SELECT + pickle.loads, each transiently
+# allocating ~250 MB for the full S&P 500 DataFrame. On a 512 MB Heroku
+# Basic dyno that immediately trips R14/R15 (memory exceeded). With this
+# memo, the DataFrame is loaded once per process and reused.
+#
+# We hold the cached object for `_MEMO_TTL` seconds so a fresh worker
+# write (release phase or Scheduler) is picked up without restarting
+# the web dyno.
+
+import threading
+
+_MEMO_LOCK = threading.Lock()
+_MEMO_DATA = None
+_MEMO_TS = None
+_MEMO_LOADED_AT = 0.0
+_MEMO_TTL = 300.0  # seconds
+
+
+def get_market_data():
+    """Process-wide memoized accessor. Returns (DataFrame, iso_timestamp).
+
+    Use this from request handlers instead of load_cached_market_data()
+    to avoid concurrent re-decodes of the same pickle blob.
+    """
+    import time as _time
+    global _MEMO_DATA, _MEMO_TS, _MEMO_LOADED_AT
+    now = _time.time()
+    if _MEMO_DATA is not None and (now - _MEMO_LOADED_AT) < _MEMO_TTL:
+        return _MEMO_DATA, _MEMO_TS
+
+    with _MEMO_LOCK:
+        # Double-check pattern: another thread may have populated it
+        # while we were waiting for the lock.
+        now = _time.time()
+        if _MEMO_DATA is not None and (now - _MEMO_LOADED_AT) < _MEMO_TTL:
+            return _MEMO_DATA, _MEMO_TS
+
+        df, ts = load_cached_market_data()
+        _MEMO_DATA = df
+        _MEMO_TS = ts
+        _MEMO_LOADED_AT = now
+        return df, ts
+
+
+def invalidate_memo():
+    """Drop the in-process memo. Called after the worker writes a new cache
+    so the API serves fresh data without a dyno restart."""
+    global _MEMO_DATA, _MEMO_TS, _MEMO_LOADED_AT
+    with _MEMO_LOCK:
+        _MEMO_DATA = None
+        _MEMO_TS = None
+        _MEMO_LOADED_AT = 0.0
+
+
 def save_market_data_cache(data):
     """Persist market data. Writes to Postgres on Heroku, pickle locally.
 

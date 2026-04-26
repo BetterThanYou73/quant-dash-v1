@@ -120,7 +120,7 @@ def ensure_cached(req: EnsureRequest):
         raise HTTPException(status_code=400, detail="tickers list is empty")
 
     # 1. What's already in the cache?
-    cached, _ = de.load_cached_market_data()
+    cached, _ = de.get_market_data()
     if not cached.empty:
         existing = set(sig.extract_close_prices(cached).columns)
     else:

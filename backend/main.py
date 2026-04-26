@@ -117,7 +117,7 @@ def cache_status():
     # The cache may live in Postgres (Heroku) or on local disk. Probe the
     # active backend by calling load_cached_market_data() rather than
     # stat-ing the file path \u2014 on Heroku the file path will never exist.
-    data, cache_ts = de.load_cached_market_data()
+    data, cache_ts = de.get_market_data()
 
     if data.empty and not cache_path.exists():
         return {
