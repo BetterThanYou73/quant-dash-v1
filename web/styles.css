@@ -642,7 +642,7 @@ nav {
 
 /* Portfolio summary cards. */
 .pf-summary {
-  display: grid; grid-template-columns: repeat(4, 1fr); gap: 10px;
+  display: grid; grid-template-columns: repeat(6, 1fr); gap: 10px;
   margin-bottom: 14px;
 }
 .pf-summary .card {
@@ -657,6 +657,12 @@ nav {
 .pf-summary .card .sub.neg { color: var(--danger); }
 
 .pf-actions { display: flex; gap: 8px; align-items: end; flex-wrap: wrap; }
+.pf-grid { display: grid; grid-template-columns: 2.2fr 1fr; gap: 14px; align-items: start; }
+@media (max-width: 1100px) { .pf-grid { grid-template-columns: 1fr; } }
+.pf-section-label {
+  font-size: 11px; color: var(--text3); text-transform: uppercase;
+  letter-spacing: 0.5px; margin-bottom: 6px;
+}
 .pf-disclaimer {
   margin-top: 12px; padding: 8px 10px;
   background: rgba(255,200,0,0.06);
@@ -670,4 +676,5 @@ nav {
   .stat-strip { grid-template-columns: repeat(3,1fr); }
   .main-grid { grid-template-columns: 1fr; }
   .bottom-row { grid-template-columns: 1fr; }
+  .pf-summary { grid-template-columns: repeat(3, 1fr); }
 }

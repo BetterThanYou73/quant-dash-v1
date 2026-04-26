@@ -29,7 +29,7 @@ const fmtPrice = (x) => (x == null || Number.isNaN(x))
 const fmtNum = (x, d = 3) => (x == null || Number.isNaN(x)) ? "—" : Number(x).toFixed(d);
 
 async function apiGet(path) {
-  const res = await fetch(`${API}${path}`);
+  const res = await fetch(`${API}${path}`, { credentials: "include" });
   if (!res.ok) {
     let detail = res.statusText;
     try { detail = (await res.json()).detail || detail; } catch (_) {}
@@ -38,11 +38,12 @@ async function apiGet(path) {
   return res.json();
 }
 
-async function apiPost(path, body) {
+async function apiSend(path, method, body) {
   const res = await fetch(`${API}${path}`, {
-    method: "POST",
+    method,
+    credentials: "include",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(body || {}),
+    body: body == null ? undefined : JSON.stringify(body),
   });
   if (!res.ok) {
     let detail = res.statusText;
@@ -51,6 +52,10 @@ async function apiPost(path, body) {
   }
   return res.json();
 }
+
+async function apiPost(path, body)   { return apiSend(path, "POST", body || {}); }
+async function apiPut(path, body)    { return apiSend(path, "PUT",  body || {}); }
+async function apiDelete(path)       { return apiSend(path, "DELETE", null); }
 
 // =========================================================================
 // 1a. SNAPSHOT BOOTSTRAP — single-request page warm-up
@@ -1337,47 +1342,69 @@ async function _runScreener() {
   }
 }
 
-// ----- Portfolio (localStorage-backed) -----
+// ----- Portfolio (server-backed via /api/portfolio) -----
 //
-// Schema in localStorage (key: "qd.portfolio.v1"):
-//   [{ ticker: "AAPL", shares: 10, avg_cost: 175.20 }, ...]
+// Phase 2a: positions live in Postgres, scoped by an httpOnly device-id
+// cookie (qd_device). Phase 2b will migrate device-owned rows to the
+// signed-in user with one UPDATE.
 //
-// The version suffix lets Phase 2 (Postgres) read+migrate v1 records the
-// first time the user signs in. Same strategy we used for the watchlist.
+// Migration: legacy positions stored under "qd.portfolio.v1" in
+// localStorage are PUT to the server on first load (when the server
+// returns count=0), then localStorage is cleared. This keeps existing
+// users from "losing" their positions when this module deploys.
 
 const PORTFOLIO_KEY = "qd.portfolio.v1";
+let _PF_MIGRATED = false;  // session flag — only attempt migration once per page load
 
 const Portfolio = {
-  load() {
-    try { return JSON.parse(localStorage.getItem(PORTFOLIO_KEY) || "[]"); }
-    catch (_) { return []; }
-  },
-  save(items) { localStorage.setItem(PORTFOLIO_KEY, JSON.stringify(items)); },
-  add(ticker, shares, avgCost) {
-    const items = Portfolio.load();
-    const sym = ticker.toUpperCase().trim();
-    if (!sym || !(shares > 0) || !(avgCost > 0)) return false;
-    const existing = items.find(p => p.ticker === sym);
-    if (existing) {
-      // Weighted-average cost when adding to an existing position
-      // (avoids accidental cost-basis erasure if user re-adds the same name).
-      const totalShares = existing.shares + shares;
-      existing.avg_cost = (existing.shares * existing.avg_cost + shares * avgCost) / totalShares;
-      existing.shares = totalShares;
-    } else {
-      items.push({ ticker: sym, shares, avg_cost: avgCost });
+  // Returns array of {ticker, shares, avg_cost, opened_at?}.
+  // Performs the one-shot localStorage migration the first time it sees
+  // an empty server-side portfolio for this device.
+  async load() {
+    try {
+      const data = await apiGet("/api/portfolio");
+      if (!_PF_MIGRATED && data.count === 0) {
+        _PF_MIGRATED = true;
+        let legacy = [];
+        try { legacy = JSON.parse(localStorage.getItem(PORTFOLIO_KEY) || "[]"); }
+        catch (_) { legacy = []; }
+        if (Array.isArray(legacy) && legacy.length) {
+          try {
+            await apiPut("/api/portfolio", { items: legacy });
+            localStorage.removeItem(PORTFOLIO_KEY);
+            const after = await apiGet("/api/portfolio");
+            return after.positions || [];
+          } catch (_) { /* fall through to empty list */ }
+        }
+      }
+      return data.positions || [];
+    } catch (_) {
+      // Offline fallback — read whatever's still in localStorage so the
+      // page is at least usable until the network recovers.
+      try { return JSON.parse(localStorage.getItem(PORTFOLIO_KEY) || "[]"); }
+      catch (__) { return []; }
     }
-    Portfolio.save(items);
-    return true;
   },
-  remove(ticker) {
-    const items = Portfolio.load().filter(p => p.ticker !== ticker.toUpperCase());
-    Portfolio.save(items);
+  async add(ticker, shares, avgCost) {
+    const sym = (ticker || "").toUpperCase().trim();
+    if (!sym || !(shares > 0) || !(avgCost >= 0)) return { ok: false, error: "Need a ticker, positive shares, and non-negative avg cost." };
+    try {
+      const r = await apiPost("/api/portfolio", { ticker: sym, shares, avg_cost: avgCost });
+      return { ok: true, position: r.position };
+    } catch (e) {
+      return { ok: false, error: e.message };
+    }
+  },
+  async remove(ticker) {
+    const sym = (ticker || "").toUpperCase().trim();
+    if (!sym) return false;
+    try { await apiDelete(`/api/portfolio/${encodeURIComponent(sym)}`); return true; }
+    catch (_) { return false; }
   },
 };
 
 async function openPortfolio() {
-  Modal.open("Portfolio — Browser-Local", `
+  Modal.open("Portfolio", `
     <div class="modal-controls">
       <label>Ticker <input id="pf-ticker" class="field" maxlength="6" placeholder="AAPL"></label>
       <label>Shares <input id="pf-shares" class="field" type="number" step="0.01" min="0" placeholder="10"></label>
@@ -1387,21 +1414,25 @@ async function openPortfolio() {
     <div id="pf-summary" class="pf-summary"></div>
     <div id="pf-table"></div>
     <div class="pf-disclaimer">
-      Positions are stored only in this browser (localStorage); they don't leave your machine.
+      Positions are stored on the server, scoped to this browser via a device-id cookie.
       Prices come from the cached market data and may be up to a day stale.
-      Phase 2 will move this to a Postgres-backed multi-device account.
+      Phase 2b will move device-scoped portfolios to user accounts on sign-in.
     </div>
   `);
   document.getElementById("pf-add").addEventListener("click", _addPortfolioPosition);
   await _renderPortfolio();
 }
 
-function _addPortfolioPosition() {
+async function _addPortfolioPosition() {
   const t = document.getElementById("pf-ticker").value;
   const s = parseFloat(document.getElementById("pf-shares").value);
   const c = parseFloat(document.getElementById("pf-cost").value);
-  if (!Portfolio.add(t, s, c)) {
-    alert("Need a ticker, positive shares, and positive avg cost.");
+  const btn = document.getElementById("pf-add");
+  btn.disabled = true;
+  const res = await Portfolio.add(t, s, c);
+  btn.disabled = false;
+  if (!res.ok) {
+    alert(res.error || "Could not add position.");
     return;
   }
   document.getElementById("pf-ticker").value = "";
@@ -1411,76 +1442,109 @@ function _addPortfolioPosition() {
 }
 
 async function _renderPortfolio() {
-  const positions = Portfolio.load();
   const tableEl = document.getElementById("pf-table");
   const sumEl = document.getElementById("pf-summary");
+  tableEl.innerHTML = `<div class="placeholder">Loading portfolio analytics…</div>`;
+  sumEl.innerHTML = "";
+
+  // One round-trip for everything: positions + prices + factors + sector exposure.
+  let analytics;
+  try {
+    analytics = await apiGet("/api/portfolio/analytics");
+  } catch (e) {
+    tableEl.innerHTML = `<div class="placeholder err">Analytics fetch failed: ${e.message}</div>`;
+    return;
+  }
+
+  const positions = analytics.positions || [];
   if (!positions.length) {
     tableEl.innerHTML = `<div class="placeholder">No positions yet. Add one above.</div>`;
-    sumEl.innerHTML = "";
     return;
   }
 
-  // Single batch quote for all positions — keeps it to one round-trip
-  // even with 50 holdings.
-  let quotes = {};
-  try {
-    const data = await apiGet(`/api/quotes?tickers=${positions.map(p => p.ticker).join(",")}`);
-    for (const q of data.results) quotes[q.ticker] = q;
-  } catch (e) {
-    tableEl.innerHTML = `<div class="placeholder err">Quote fetch failed: ${e.message}</div>`;
-    return;
-  }
+  const t = analytics.totals;
+  const dayPctApprox = (t.value && (t.value - t.day_change)) ? t.day_change / (t.value - t.day_change) : null;
+  sumEl.innerHTML = `
+    <div class="card"><div class="lbl">Market Value</div><div class="val">${fmtPrice(t.value)}</div></div>
+    <div class="card"><div class="lbl">Cost Basis</div><div class="val">${fmtPrice(t.cost)}</div></div>
+    <div class="card"><div class="lbl">Unrealized P&amp;L</div>
+      <div class="val" style="color:${(t.unrealized_pl||0)>=0?'var(--success)':'var(--danger)'}">${fmtPrice(t.unrealized_pl)}</div>
+      <div class="sub ${(t.unrealized_pl||0)>=0?'pos':'neg'}">${fmtPct(t.unrealized_pl_pct)}</div>
+    </div>
+    <div class="card"><div class="lbl">Today</div>
+      <div class="val" style="color:${(t.day_change||0)>=0?'var(--success)':'var(--danger)'}">${fmtPrice(t.day_change)}</div>
+      <div class="sub ${(t.day_change||0)>=0?'pos':'neg'}">${fmtPct(dayPctApprox)}</div>
+    </div>
+    <div class="card"><div class="lbl">Beta vs ${analytics.benchmark || "SPY"}</div>
+      <div class="val">${fmtNum(t.weighted_beta, 2)}</div>
+      <div class="sub" style="color:var(--text3)">value-weighted</div>
+    </div>
+    <div class="card"><div class="lbl">Composite Z</div>
+      <div class="val" style="color:${(t.weighted_composite_z||0)>=0?'var(--success)':'var(--danger)'}">${fmtNum(t.weighted_composite_z, 2)}</div>
+      <div class="sub" style="color:var(--text3)">factor score</div>
+    </div>`;
 
-  let totalValue = 0, totalCost = 0, totalDayChange = 0;
   const rows = positions.map(p => {
-    const q = quotes[p.ticker];
-    const price = q ? q.price : null;
-    const dayPct = q ? q.change_pct : null;
-    const value = price != null ? price * p.shares : null;
-    const cost = p.avg_cost * p.shares;
-    const upl = value != null ? value - cost : null;
-    const uplPct = (upl != null && cost) ? upl / cost : null;
-    const dayDollar = (price != null && dayPct != null) ? value * dayPct : null;
-    if (value != null) { totalValue += value; totalCost += cost; }
-    if (dayDollar != null) totalDayChange += dayDollar;
+    const dayCls = (p.day_change_pct || 0) >= 0 ? "pos" : "neg";
+    const uplCls = (p.unrealized_pl || 0) >= 0 ? "pos" : "neg";
+    const sigCls = p.signal === "Buy" ? "pos" : (p.signal === "Avoid" ? "neg" : "");
     return `
       <tr>
-        <td><strong>${p.ticker}</strong></td>
-        <td>${p.shares.toLocaleString("en-US", {maximumFractionDigits:4})}</td>
+        <td><strong>${p.ticker}</strong><div style="font-size:9px;color:var(--text3)">${p.sector || "—"}</div></td>
+        <td>${(p.shares || 0).toLocaleString("en-US", {maximumFractionDigits:4})}</td>
         <td>${fmtPrice(p.avg_cost)}</td>
-        <td>${fmtPrice(price)}</td>
-        <td class="${(dayPct||0)>=0?'pos':'neg'}">${fmtPct(dayPct)}</td>
-        <td>${fmtPrice(value)}</td>
-        <td class="${(upl||0)>=0?'pos':'neg'}">${fmtPrice(upl)}</td>
-        <td class="${(uplPct||0)>=0?'pos':'neg'}">${fmtPct(uplPct)}</td>
+        <td>${fmtPrice(p.price)}</td>
+        <td class="${dayCls}">${fmtPct(p.day_change_pct)}</td>
+        <td>${fmtPrice(p.value)}</td>
+        <td>${fmtPct(p.weight)}</td>
+        <td class="${uplCls}">${fmtPrice(p.unrealized_pl)}</td>
+        <td class="${uplCls}">${fmtPct(p.unrealized_pl_pct)}</td>
+        <td>${fmtNum(p.beta, 2)}</td>
+        <td>${fmtNum(p.composite_z, 2)}</td>
+        <td class="${sigCls}">${p.signal || "—"}</td>
         <td><button class="pill" style="padding:3px 8px;font-size:9px" data-rm="${p.ticker}">Remove</button></td>
       </tr>`;
   }).join("");
 
-  const totalUpl = totalValue - totalCost;
-  const totalUplPct = totalCost ? totalUpl / totalCost : null;
-  sumEl.innerHTML = `
-    <div class="card"><div class="lbl">Market Value</div><div class="val">${fmtPrice(totalValue)}</div></div>
-    <div class="card"><div class="lbl">Cost Basis</div><div class="val">${fmtPrice(totalCost)}</div></div>
-    <div class="card"><div class="lbl">Unrealized P&amp;L</div>
-      <div class="val ${totalUpl>=0?'pos':'neg'}" style="color:${totalUpl>=0?'var(--success)':'var(--danger)'}">${fmtPrice(totalUpl)}</div>
-      <div class="sub ${totalUpl>=0?'pos':'neg'}">${fmtPct(totalUplPct)}</div>
-    </div>
-    <div class="card"><div class="lbl">Today</div>
-      <div class="val" style="color:${totalDayChange>=0?'var(--success)':'var(--danger)'}">${fmtPrice(totalDayChange)}</div>
-    </div>`;
+  // Sector exposure mini-table with inline weight bars.
+  const sectorRows = (analytics.sector_exposure || []).map(s => `
+    <tr>
+      <td class="lcol"><strong>${s.sector}</strong></td>
+      <td>${fmtPrice(s.value)}</td>
+      <td>${fmtPct(s.weight)}</td>
+      <td><div style="background:rgba(76,175,80,0.35);height:6px;width:${Math.max(2, (s.weight||0)*100).toFixed(1)}%;border-radius:2px"></div></td>
+    </tr>`).join("");
+
   tableEl.innerHTML = `
-    <table class="modal-table">
-      <thead><tr>
-        <th style="text-align:left">Ticker</th><th>Shares</th><th>Avg Cost</th>
-        <th>Price</th><th>Day %</th><th>Value</th><th>Unrl P&amp;L</th><th>Unrl %</th><th></th>
-      </tr></thead>
-      <tbody>${rows}</tbody>
-    </table>`;
+    <div class="pf-grid">
+      <div>
+        <div class="pf-section-label">Positions</div>
+        <table class="modal-table">
+          <thead><tr>
+            <th class="lcol">Ticker</th><th>Shares</th><th>Avg Cost</th><th>Price</th>
+            <th>Day %</th><th>Value</th><th>Weight</th>
+            <th>Unrl P&amp;L</th><th>Unrl %</th>
+            <th>β</th><th>Z</th><th>Signal</th><th></th>
+          </tr></thead>
+          <tbody>${rows}</tbody>
+        </table>
+      </div>
+      <div>
+        <div class="pf-section-label">Sector Exposure</div>
+        <table class="modal-table">
+          <thead><tr>
+            <th class="lcol">Sector</th><th>Value</th><th>%</th><th></th>
+          </tr></thead>
+          <tbody>${sectorRows || `<tr><td colspan="4" class="placeholder">no sectors</td></tr>`}</tbody>
+        </table>
+      </div>
+    </div>`;
+
   // Bind remove buttons.
   tableEl.querySelectorAll("button[data-rm]").forEach(btn => {
-    btn.addEventListener("click", () => {
-      Portfolio.remove(btn.dataset.rm);
+    btn.addEventListener("click", async () => {
+      btn.disabled = true;
+      await Portfolio.remove(btn.dataset.rm);
       _renderPortfolio();
     });
   });
