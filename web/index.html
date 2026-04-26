@@ -5,7 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>QuantDash — Quantitative Dashboard</title>
 <link href="https://fonts.googleapis.com/css2?family=Space+Mono:ital,wght@0,400;0,700;1,400&family=Syne:wght@400;600;700;800&display=swap" rel="stylesheet">
-<link rel="stylesheet" href="styles.css?v=10">
+<link rel="stylesheet" href="styles.css?v=11">
 </head>
 <body>
 
@@ -26,8 +26,43 @@
     <button class="pill" id="nav-screener">Screener</button>
     <button class="pill" id="nav-portfolio">Portfolio</button>
     <button class="pill" id="nav-docs">API Docs</button>
+    <!-- Auth slot: shows "Sign In" when anonymous, "<email> · Logout" when signed in.
+         Wired by app.js Auth module after /api/auth/me resolves. -->
+    <button class="pill" id="nav-auth" hidden>Sign In</button>
+    <span class="auth-user" id="nav-auth-user" hidden></span>
+    <button class="pill" id="nav-logout" hidden>Logout</button>
   </div>
 </nav>
+
+<!-- ============================================================
+     AUTH MODAL (sign in / sign up)
+     Tabbed: switches between login + signup without reopening.
+     ============================================================ -->
+<div id="auth-modal" class="modal-backdrop" hidden>
+  <div class="modal auth-modal" role="dialog" aria-modal="true" aria-labelledby="auth-title">
+    <header class="modal-head">
+      <h2 id="auth-title" class="modal-title">Sign in</h2>
+      <button class="modal-close" id="auth-close" aria-label="Close">×</button>
+    </header>
+    <div class="auth-tabs">
+      <button class="auth-tab active" data-auth-mode="login">Sign in</button>
+      <button class="auth-tab" data-auth-mode="signup">Create account</button>
+    </div>
+    <form class="auth-form" id="auth-form" autocomplete="on" novalidate>
+      <label class="auth-field">
+        <span>Email</span>
+        <input type="email" id="auth-email" autocomplete="email" required maxlength="254" placeholder="you@example.com">
+      </label>
+      <label class="auth-field">
+        <span>Password</span>
+        <input type="password" id="auth-password" autocomplete="current-password" required minlength="8" maxlength="128" placeholder="At least 8 characters">
+      </label>
+      <p class="auth-hint" id="auth-hint">Your portfolio carries over from this device when you sign up.</p>
+      <p class="auth-error" id="auth-error" hidden></p>
+      <button type="submit" class="pill cta auth-submit" id="auth-submit">Sign in</button>
+    </form>
+  </div>
+</div>
 
 <!-- ============================================================
      PAGE: DASHBOARD
@@ -277,7 +312,7 @@
   <div id="pf-table"></div>
   <div class="pf-disclaimer">
     Positions are stored on the server, scoped to this browser via a device-id cookie.
-    Sign in (coming soon) to access from any device. Prices come from the cached market
+    Sign in to access your portfolio from any device. Prices come from the cached market
     data and may be up to a day stale. Factor scores assume the market is open recently;
     long market closures will skew Day % readings.
   </div>
@@ -302,6 +337,6 @@
 
 <!-- Order matters: config first (sets API_BASE), then app reads window.QD_CONFIG -->
 <script src="config.js"></script>
-<script src="app.js?v=10"></script>
+<script src="app.js?v=11"></script>
 </body>
 </html>

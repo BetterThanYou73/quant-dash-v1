@@ -1402,6 +1402,10 @@ const Portfolio = {
     catch (_) { return false; }
   },
 };
+// Expose for the Auth module so login/logout can refresh the page after
+// a successful identity change. Auth lives in its own IIFE later in the
+// file, so it can't see lexical `Portfolio`.
+window.Portfolio = Portfolio;
 
 async function openPortfolio() {
   // Page-based now (was a modal). Render into the static markup in
@@ -1621,6 +1625,159 @@ const Router = (() => {
   return { register, bindNavLink, goto, start };
 })();
 
+// =========================================================================
+// AUTH (Phase 2b)
+// Drives the sign-in/sign-up modal and the nav auth slot.
+// State flow:
+//   1. on boot, refresh() calls /api/auth/me to learn whether the
+//      qd_session cookie is valid. The "Sign In" pill is shown until
+//      this resolves to avoid an auth-state flash.
+//   2. submit() POSTs to /api/auth/{login,signup}. On success, the
+//      backend has already migrated this device's portfolio into the
+//      account; we re-pull the portfolio so the page reflects it.
+//   3. logout() POSTs to /api/auth/logout and re-runs Portfolio.load()
+//      so the (now empty) device portfolio is shown instead.
+// =========================================================================
+const Auth = (() => {
+  let _user = null;          // {id, email} or null
+  let _mode = "login";       // "login" | "signup"
+  const els = {};
+
+  function _cache() {
+    els.modal      = document.getElementById("auth-modal");
+    els.close      = document.getElementById("auth-close");
+    els.title      = document.getElementById("auth-title");
+    els.tabs       = document.querySelectorAll(".auth-tab");
+    els.form       = document.getElementById("auth-form");
+    els.email      = document.getElementById("auth-email");
+    els.password   = document.getElementById("auth-password");
+    els.hint       = document.getElementById("auth-hint");
+    els.error      = document.getElementById("auth-error");
+    els.submit     = document.getElementById("auth-submit");
+    els.navAuth    = document.getElementById("nav-auth");
+    els.navUser    = document.getElementById("nav-auth-user");
+    els.navLogout  = document.getElementById("nav-logout");
+  }
+
+  function _renderNav() {
+    if (!els.navAuth) return;
+    if (_user) {
+      els.navAuth.hidden    = true;
+      els.navUser.hidden    = false;
+      els.navLogout.hidden  = false;
+      els.navUser.textContent = _user.email;
+      els.navUser.title       = _user.email;
+    } else {
+      els.navAuth.hidden    = false;
+      els.navUser.hidden    = true;
+      els.navLogout.hidden  = true;
+    }
+  }
+
+  function _setMode(mode) {
+    _mode = mode;
+    if (mode === "signup") {
+      els.title.textContent  = "Create account";
+      els.submit.textContent = "Create account";
+      els.password.setAttribute("autocomplete", "new-password");
+      els.hint.textContent   = "We'll move the portfolio you just built on this device into your new account.";
+    } else {
+      els.title.textContent  = "Sign in";
+      els.submit.textContent = "Sign in";
+      els.password.setAttribute("autocomplete", "current-password");
+      els.hint.textContent   = "Sign in to access your portfolio from any device.";
+    }
+    els.tabs.forEach(t => t.classList.toggle("active", t.dataset.authMode === mode));
+    els.error.hidden = true;
+  }
+
+  function open(mode = "login") {
+    if (!els.modal) return;
+    _setMode(mode);
+    els.modal.hidden = false;
+    setTimeout(() => els.email.focus(), 50);
+  }
+
+  function close() {
+    if (els.modal) els.modal.hidden = true;
+  }
+
+  async function refresh() {
+    // Don't break the page if /api/auth/me fails \u2014 just stay anonymous.
+    try {
+      const r = await apiGet("/api/auth/me");
+      _user = r && r.user ? r.user : null;
+    } catch {
+      _user = null;
+    }
+    _renderNav();
+  }
+
+  async function submit(ev) {
+    ev?.preventDefault();
+    const email    = (els.email.value || "").trim();
+    const password = els.password.value || "";
+    if (!email || password.length < 8) {
+      els.error.textContent = "Enter a valid email and password (8+ chars).";
+      els.error.hidden = false;
+      return;
+    }
+    els.submit.disabled = true;
+    els.error.hidden = true;
+    try {
+      const path = _mode === "signup" ? "/api/auth/signup" : "/api/auth/login";
+      const r = await apiPost(path, { email, password });
+      _user = r.user;
+      _renderNav();
+      close();
+      // Backend already migrated the device portfolio; re-pull so the UI
+      // reflects whatever the account now owns.
+      if (window.Portfolio?.load) {
+        try { await window.Portfolio.load(); } catch {}
+      }
+    } catch (e) {
+      // apiSend throws Error with .message containing the server detail.
+      const msg = (e && e.message) || "Something went wrong.";
+      els.error.textContent = msg.replace(/^.*?:\s*/, "");
+      els.error.hidden = false;
+    } finally {
+      els.submit.disabled = false;
+    }
+  }
+
+  async function logout() {
+    try { await apiPost("/api/auth/logout", {}); } catch {}
+    _user = null;
+    _renderNav();
+    if (window.Portfolio?.load) {
+      try { await window.Portfolio.load(); } catch {}
+    }
+  }
+
+  function bind() {
+    _cache();
+    if (!els.modal) return;
+    els.close?.addEventListener("click", close);
+    els.modal.addEventListener("click", (e) => {
+      // Backdrop click closes; clicks inside the .modal don't bubble here.
+      if (e.target === els.modal) close();
+    });
+    els.tabs.forEach(t =>
+      t.addEventListener("click", () => _setMode(t.dataset.authMode))
+    );
+    els.form?.addEventListener("submit", submit);
+    els.navAuth?.addEventListener("click", () => open("login"));
+    els.navLogout?.addEventListener("click", logout);
+    document.addEventListener("keydown", (e) => {
+      if (e.key === "Escape" && !els.modal.hidden) close();
+    });
+  }
+
+  function user() { return _user; }
+
+  return { bind, refresh, open, close, logout, user };
+})();
+
 // ----- Bind nav -----
 function bindNav() {
   Modal.bind();
@@ -1660,6 +1817,13 @@ document.addEventListener("DOMContentLoaded", () => {
   bindPriceChartTabs();
   bindPairs();
   bindNav();
+
+  // Auth must bind before Portfolio.load() runs so the nav slot is wired
+  // by the time /api/auth/me resolves. refresh() runs async \u2014 it's
+  // fire-and-forget; the nav just stays anonymous-looking until the
+  // round-trip completes (~50ms typical).
+  Auth.bind();
+  Auth.refresh();
 
   // One-shot at boot: pairs runs only when user clicks Run.
   loadPairs();

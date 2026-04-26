@@ -727,3 +727,95 @@ nav {
   .bottom-row { grid-template-columns: 1fr; }
   .pf-summary { grid-template-columns: repeat(3, 1fr); }
 }
+
+/* ============================================================
+   AUTH (Phase 2b)
+   Sign-in/sign-up modal + nav slot. The modal reuses the
+   .modal-backdrop framework but the form layout is distinct
+   enough to deserve its own classes.
+   ============================================================ */
+.nav-right .auth-user {
+  font-family: 'Space Mono', monospace;
+  font-size: 11px;
+  color: var(--text2, #c8c8d4);
+  padding: 5px 10px;
+  border: 1px solid rgba(255,255,255,0.08);
+  border-radius: 999px;
+  max-width: 180px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.auth-modal { width: 380px; max-width: 92vw; }
+.auth-tabs {
+  display: flex;
+  border-bottom: 1px solid rgba(255,255,255,0.08);
+  margin: 0 -18px 14px;
+  padding: 0 18px;
+}
+.auth-tab {
+  background: transparent;
+  border: none;
+  color: var(--text3, #8a8a99);
+  font-family: 'Syne', sans-serif;
+  font-size: 13px;
+  font-weight: 600;
+  padding: 10px 14px 12px;
+  margin-right: 4px;
+  cursor: pointer;
+  border-bottom: 2px solid transparent;
+  transition: color 120ms, border-color 120ms;
+}
+.auth-tab:hover { color: var(--text1, #f4f4f7); }
+.auth-tab.active {
+  color: var(--accent, #5ad6c7);
+  border-bottom-color: var(--accent, #5ad6c7);
+}
+
+.auth-form { display: flex; flex-direction: column; gap: 12px; }
+.auth-field { display: flex; flex-direction: column; gap: 5px; }
+.auth-field span {
+  font-size: 10px;
+  color: var(--text3, #8a8a99);
+  letter-spacing: 0.6px;
+  text-transform: uppercase;
+  font-family: 'Space Mono', monospace;
+}
+.auth-field input {
+  background: rgba(255,255,255,0.03);
+  border: 1px solid rgba(255,255,255,0.1);
+  border-radius: 6px;
+  color: var(--text1, #f4f4f7);
+  padding: 9px 11px;
+  font-family: 'Space Mono', monospace;
+  font-size: 13px;
+  outline: none;
+  transition: border-color 120ms, background 120ms;
+}
+.auth-field input:focus {
+  border-color: var(--accent, #5ad6c7);
+  background: rgba(255,255,255,0.06);
+}
+.auth-hint {
+  font-size: 11px;
+  color: var(--text3, #8a8a99);
+  margin: 0;
+  line-height: 1.4;
+}
+.auth-error {
+  font-size: 12px;
+  color: #ff6b6b;
+  margin: 0;
+  padding: 8px 10px;
+  background: rgba(255,107,107,0.08);
+  border: 1px solid rgba(255,107,107,0.2);
+  border-radius: 6px;
+}
+.auth-submit {
+  margin-top: 4px;
+  padding: 9px 16px;
+  font-size: 13px;
+  width: 100%;
+}
+.auth-submit:disabled { opacity: 0.5; cursor: wait; }
