@@ -132,6 +132,13 @@ def get_signals(
     sector_map = meta.set_index("Symbol")["Sector"].to_dict()
     name_map = meta.set_index("Symbol")["Name"].to_dict() if "Name" in meta.columns else {}
 
+    # Fold in user-added ticker metadata (anything outside SP500.csv that
+    # the user added through /api/cache/ensure). Don't overwrite SP500
+    # entries — they're the canonical source.
+    for sym, info in de.read_user_meta().items():
+        sector_map.setdefault(sym, info.get("sector") or "Unknown")
+        name_map.setdefault(sym, info.get("name") or sym)
+
     signal_df["Sector"] = signal_df["Ticker"].map(sector_map).fillna("Unknown")
     signal_df["Name"] = signal_df["Ticker"].map(name_map).fillna(signal_df["Ticker"])
 

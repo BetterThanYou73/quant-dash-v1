@@ -27,7 +27,13 @@ BENCHMARK_TICKER = "SPY"
 
 
 def build_universe():
-    """Full S&P 500 from CSV + SPY benchmark, deduped and uppercased."""
+    """Full S&P 500 from CSV + SPY benchmark + any user-added tickers,
+    deduped and uppercased.
+
+    User-added tickers come from /api/cache/ensure (frontend watchlist
+    add). Re-read on every tick so additions during runtime get picked up
+    on the next refresh without restarting the worker.
+    """
     meta = de.get_ticker_metadata()
     sp500 = (
         meta["Symbol"]
@@ -37,16 +43,18 @@ def build_universe():
         .dropna()
         .tolist()
     )
-    return sorted(set(sp500 + [BENCHMARK_TICKER]))
+    extras = de.read_user_tickers()
+    return sorted(set(sp500 + [BENCHMARK_TICKER] + extras))
 
 
 def run_worker(interval_seconds, period, batch_size):
-    universe = build_universe()
-    print(f"[worker] universe size: {len(universe)} (S&P 500 + benchmark)")
     print(f"[worker] period={period}  batch_size={batch_size}  interval={interval_seconds}s")
     print(f"[worker] first refresh starting now (this can take a few minutes)…")
 
     while True:
+        # Re-read the universe each tick so user-added tickers
+        # (persisted by /api/cache/ensure) get picked up automatically.
+        universe = build_universe()
         now = datetime.utcnow().isoformat()
         data, cache_ts = de.refresh_market_data_cache_batched(
             universe, period=period, batch_size=batch_size

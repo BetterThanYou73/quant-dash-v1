@@ -38,6 +38,20 @@ async function apiGet(path) {
   return res.json();
 }
 
+async function apiPost(path, body) {
+  const res = await fetch(`${API}${path}`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body || {}),
+  });
+  if (!res.ok) {
+    let detail = res.statusText;
+    try { detail = (await res.json()).detail || detail; } catch (_) {}
+    throw new Error(`${res.status} ${detail}`);
+  }
+  return res.json();
+}
+
 function setStatus(state, title) {
   const dot = document.getElementById("status-dot");
   dot.classList.remove("stale", "dead");
@@ -71,7 +85,21 @@ const AppState = {
   priceLookback: 63,              // days; controlled by chart-tab buttons
   sort: { col: "Composite_Z", dir: "desc" },  // signals table sort
   lastSignals: [],                // last fetched rows, kept for re-sort without refetch
+  nameMap: {},                    // ticker -> company name, populated from /api/signals + autocomplete picks
+  acItems: [],                    // autocomplete current results
+  acActiveIdx: -1,                // keyboard-highlighted index in autocomplete
+  acTimer: null,                  // debounce timer for the autocomplete fetch
 };
+
+// Cache the company name we discovered for a ticker so the watchlist
+// shows it even before the next /api/signals refresh.
+function rememberName(symbol, name) {
+  if (!symbol || !name) return;
+  AppState.nameMap[symbol.toUpperCase()] = name;
+}
+function nameOf(symbol) {
+  return AppState.nameMap[(symbol || "").toUpperCase()] || "";
+}
 
 // =========================================================================
 // 3. WATCHLIST MODULE — localStorage CRUD
@@ -129,15 +157,18 @@ function renderWatchlist() {
   if (!items.length) {
     list.innerHTML = `<div class="wl-empty">No tickers. Add one or reset.</div>`;
   } else {
-    list.innerHTML = items.map(it => `
+    list.innerHTML = items.map(it => {
+      const nm = nameOf(it.symbol);
+      return `
       <div class="wl-item ${it.enabled ? "" : "disabled"}" data-sym="${it.symbol}">
         <span class="wl-sym">${it.symbol}</span>
+        <span class="wl-name">${nm}</span>
         <button class="wl-toggle" data-action="toggle" data-sym="${it.symbol}">
           ${it.enabled ? "ON" : "OFF"}
         </button>
         <button class="wl-remove" data-action="remove" data-sym="${it.symbol}">×</button>
-      </div>
-    `).join("");
+      </div>`;
+    }).join("");
   }
 
   const enabled = items.filter(i => i.enabled).length;
@@ -169,7 +200,55 @@ function bindWatchlist() {
   if (addBtn) addBtn.addEventListener("click", addFromInput);
 
   const input = document.getElementById("watchlist-input");
-  if (input) input.addEventListener("keydown", (e) => { if (e.key === "Enter") addFromInput(); });
+  if (input) {
+    // Debounced live search against /api/universe.
+    input.addEventListener("input", () => {
+      clearTimeout(AppState.acTimer);
+      const q = input.value.trim();
+      if (!q) { hideAutocomplete(); return; }
+      AppState.acTimer = setTimeout(() => fetchAutocomplete(q), 200);
+    });
+    // Keyboard navigation in the dropdown. Enter without an active
+    // suggestion falls through to the legacy add-typed-text behavior.
+    input.addEventListener("keydown", (e) => {
+      const list = AppState.acItems;
+      if (e.key === "ArrowDown" && list.length) {
+        e.preventDefault();
+        AppState.acActiveIdx = (AppState.acActiveIdx + 1) % list.length;
+        renderAutocomplete();
+      } else if (e.key === "ArrowUp" && list.length) {
+        e.preventDefault();
+        AppState.acActiveIdx = (AppState.acActiveIdx - 1 + list.length) % list.length;
+        renderAutocomplete();
+      } else if (e.key === "Escape") {
+        hideAutocomplete();
+      } else if (e.key === "Enter") {
+        e.preventDefault();
+        if (AppState.acActiveIdx >= 0 && list[AppState.acActiveIdx]) {
+          pickAutocomplete(list[AppState.acActiveIdx]);
+        } else {
+          addFromInput();
+        }
+      }
+    });
+    // Click outside closes the dropdown.
+    document.addEventListener("click", (e) => {
+      if (!e.target.closest(".autocomplete-wrap")) hideAutocomplete();
+    });
+  }
+
+  // Suggestion clicks are wired here (delegated) so they survive re-renders.
+  const sug = document.getElementById("watchlist-suggestions");
+  if (sug) {
+    sug.addEventListener("mousedown", (e) => {
+      // mousedown so it fires before input blur swallows the click
+      const item = e.target.closest(".autocomplete-item");
+      if (!item) return;
+      const sym = item.dataset.sym;
+      const picked = AppState.acItems.find(x => x.symbol === sym);
+      if (picked) pickAutocomplete(picked);
+    });
+  }
 
   const resetBtn = document.getElementById("watchlist-reset");
   if (resetBtn) resetBtn.addEventListener("click", () => {
@@ -181,13 +260,83 @@ function bindWatchlist() {
 
 function addFromInput() {
   const input = document.getElementById("watchlist-input");
-  if (Watchlist.add(input.value)) {
-    input.value = "";
+  if (!input) return;
+  const raw = (input.value || "").trim().toUpperCase();
+  if (!raw) return;
+  // Route through the ensure-cache path so a hand-typed ticker (e.g. POET)
+  // gets fetched + persisted before scoring.
+  pickAutocomplete({ symbol: raw, name: raw, sector: "Unknown" });
+}
+
+// =========================================================================
+// 3b. AUTOCOMPLETE — /api/universe (search) + /api/cache/ensure (hydrate)
+// =========================================================================
+
+async function fetchAutocomplete(q) {
+  const sug = document.getElementById("watchlist-suggestions");
+  if (!sug) return;
+  try {
+    sug.hidden = false;
+    sug.innerHTML = `<div class="ac-loading">searching…</div>`;
+    const data = await apiGet(`/api/universe?q=${encodeURIComponent(q)}&limit=15`);
+    AppState.acItems = data.results || [];
+    AppState.acActiveIdx = AppState.acItems.length ? 0 : -1;
+    renderAutocomplete();
+  } catch (e) {
+    sug.innerHTML = `<div class="ac-empty">search failed: ${e.message}</div>`;
+  }
+}
+
+function renderAutocomplete() {
+  const sug = document.getElementById("watchlist-suggestions");
+  if (!sug) return;
+  const items = AppState.acItems;
+  if (!items.length) {
+    sug.innerHTML = `<div class="ac-empty">no matches</div>`;
+    return;
+  }
+  sug.innerHTML = items.map((x, i) => `
+    <div class="autocomplete-item ${i === AppState.acActiveIdx ? "active" : ""}" data-sym="${x.symbol}">
+      <span class="ac-sym">${x.symbol}</span>
+      <span class="ac-name">${x.name || ""}</span>
+      <span class="ac-sec">${x.sector || ""}</span>
+    </div>`).join("");
+}
+
+function hideAutocomplete() {
+  const sug = document.getElementById("watchlist-suggestions");
+  if (sug) { sug.hidden = true; sug.innerHTML = ""; }
+  AppState.acItems = [];
+  AppState.acActiveIdx = -1;
+}
+
+// User picked a suggestion (click or Enter). Hydrate the cache, then add
+// to the watchlist. The hydrate call is what makes non-S&P 500 tickers
+// scorable — it tells the backend to fetch + persist them.
+async function pickAutocomplete(item) {
+  const input = document.getElementById("watchlist-input");
+  const sym = (item.symbol || "").toUpperCase();
+  if (!sym) return;
+
+  rememberName(sym, item.name);
+  hideAutocomplete();
+  if (input) { input.value = ""; input.disabled = true; }
+
+  try {
+    // Best-effort: tell the backend to make sure this ticker is in the cache.
+    // 503 / network failures are tolerated — the watchlist add still happens
+    // and the ticker will simply be flagged "Insufficient Data" until the
+    // worker (or a manual ensure) catches up.
+    await apiPost("/api/cache/ensure", { tickers: [sym], period: "2y" });
+  } catch (e) {
+    console.warn("cache ensure failed:", e);
+  } finally {
+    if (input) input.disabled = false;
+  }
+
+  if (Watchlist.add(sym)) {
     renderWatchlist();
     refreshDataForWatchlistChange();
-  } else {
-    input.classList.add("err-flash");
-    setTimeout(() => input.classList.remove("err-flash"), 400);
   }
 }
 
@@ -384,6 +533,10 @@ async function loadSignals() {
     const qs = `?watchlist=${encodeURIComponent(enabled.join(","))}`;
     const data = await apiGet(`/api/signals${qs}`);
     AppState.lastSignals = data.results;
+    // Stash the symbol -> name map so the watchlist can show company names
+    // without an extra round-trip.
+    for (const r of data.results) rememberName(r.Ticker, r.Name);
+    renderWatchlist();
 
     // Default selection: top-scored ticker (or keep current if still in results)
     if (!AppState.selectedTicker || !data.results.find(r => r.Ticker === AppState.selectedTicker)) {
