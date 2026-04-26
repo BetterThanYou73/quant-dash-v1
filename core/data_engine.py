@@ -7,14 +7,14 @@ import yfinance as yf
 
 # Resolve paths relative to the project root, not the current working dir
 # __file__ is the path of this script file.
-PROJECT_ROOT = Path(__file__).resolve().parent
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
 DATA_DIR = PROJECT_ROOT / "data"
 CACHE_DIR = PROJECT_ROOT / "cache"
 CACHE_DATA_PATH = CACHE_DIR / "market_data.pkl"
 CACHE_META_PATH = CACHE_DIR / "market_data_meta.json"
 
 # load the S&P 500 universe once at import time
-ticker_df = pd.read_csv(PROJECT_ROOT / "SP500.csv")
+ticker_df = pd.read_csv(DATA_DIR / "SP500.csv")
 ticker_list = ticker_df["Symbol"].tolist()
 
 def fetch_stock_data(ticker=None, period='1y'):

@@ -4,3 +4,5 @@ numpy
 yfinance
 plotly
 scipy
+fastapi
+uvicorn[standard]
