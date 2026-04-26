@@ -1,4 +1,7 @@
 import json
+import io
+import os
+import pickle
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -25,6 +28,102 @@ USER_META_PATH = CACHE_DIR / "user_meta.json"
 # load the S&P 500 universe once at import time
 ticker_df = pd.read_csv(DATA_DIR / "SP500.csv")
 ticker_list = ticker_df["Symbol"].tolist()
+
+
+# --- Cache backend (file vs Postgres) ------------------------------------
+# On Heroku the dyno filesystem is ephemeral — anything we write to
+# `cache/` evaporates on the next dyno restart (which happens at least
+# every 24h). So when DATABASE_URL is set we mirror the pickle to a
+# single-row Postgres table. The web dyno reads from there on startup;
+# the worker (release phase or scheduler) writes to it.
+#
+# CACHE_BACKEND env var overrides auto-detection:
+#   "postgres" → use Postgres (requires DATABASE_URL)
+#   "file"     → use local pickle only (good for local dev)
+#   unset      → postgres if DATABASE_URL else file
+
+def _cache_backend():
+    explicit = (os.environ.get("CACHE_BACKEND") or "").strip().lower()
+    if explicit in {"postgres", "file"}:
+        return explicit
+    return "postgres" if os.environ.get("DATABASE_URL") else "file"
+
+
+def _pg_conn():
+    """Open a psycopg connection. Heroku gives `postgres://` URLs; psycopg
+    needs `postgresql://` — normalize that. Returns None if psycopg or
+    DATABASE_URL is missing (so the caller can fall back to file mode)."""
+    url = os.environ.get("DATABASE_URL")
+    if not url:
+        return None
+    if url.startswith("postgres://"):
+        url = "postgresql://" + url[len("postgres://"):]
+    try:
+        import psycopg  # type: ignore
+    except ImportError:
+        return None
+    return psycopg.connect(url, sslmode="require")
+
+
+def _pg_ensure_schema(conn):
+    """Create the cache table on first use. id=1 is the only row we ever
+    write — it's a key/value blob, not a real table."""
+    with conn.cursor() as cur:
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS market_data_cache (
+                id INTEGER PRIMARY KEY,
+                payload BYTEA NOT NULL,
+                updated_utc TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                row_count INTEGER NOT NULL DEFAULT 0,
+                col_count INTEGER NOT NULL DEFAULT 0
+            )
+        """)
+    conn.commit()
+
+
+def _pg_save(data: pd.DataFrame):
+    conn = _pg_conn()
+    if conn is None:
+        return False
+    try:
+        _pg_ensure_schema(conn)
+        buf = io.BytesIO()
+        # protocol=4 keeps the blob smaller than the default for big DFs
+        pickle.dump(data, buf, protocol=pickle.HIGHEST_PROTOCOL)
+        blob = buf.getvalue()
+        with conn.cursor() as cur:
+            cur.execute("""
+                INSERT INTO market_data_cache (id, payload, updated_utc, row_count, col_count)
+                VALUES (1, %s, NOW(), %s, %s)
+                ON CONFLICT (id) DO UPDATE SET
+                    payload     = EXCLUDED.payload,
+                    updated_utc = EXCLUDED.updated_utc,
+                    row_count   = EXCLUDED.row_count,
+                    col_count   = EXCLUDED.col_count
+            """, (blob, int(data.shape[0]), int(data.shape[1])))
+        conn.commit()
+        return True
+    finally:
+        conn.close()
+
+
+def _pg_load():
+    """Return (DataFrame, iso_timestamp) or (None, None) if no row yet."""
+    conn = _pg_conn()
+    if conn is None:
+        return None, None
+    try:
+        _pg_ensure_schema(conn)
+        with conn.cursor() as cur:
+            cur.execute("SELECT payload, updated_utc FROM market_data_cache WHERE id = 1")
+            row = cur.fetchone()
+        if not row:
+            return None, None
+        payload, ts = row
+        df = pickle.loads(payload)
+        return df, ts.isoformat() if ts else None
+    finally:
+        conn.close()
 
 def fetch_stock_data(ticker=None, period='1y'):
     """
@@ -62,7 +161,19 @@ def get_ticker_metadata():
 
 
 def load_cached_market_data():
-    """Load cached market data and metadata timestamp if available."""
+    """Load cached market data and metadata timestamp if available.
+
+    Tries Postgres first when CACHE_BACKEND=postgres (Heroku), then falls
+    back to the local pickle. The fallback matters during the brief
+    window after deploy but before the worker has populated Postgres.
+    """
+    if _cache_backend() == "postgres":
+        df, ts = _pg_load()
+        if df is not None:
+            return df, ts
+        # Fall through to file in case the worker hasn't written yet but
+        # an old pickle exists in the slug.
+
     if not CACHE_DATA_PATH.exists():
         return pd.DataFrame(), None
 
@@ -86,12 +197,22 @@ def load_cached_market_data():
 
 
 def save_market_data_cache(data):
-    """Persist market data in a local cache file plus metadata timestamp."""
-    CACHE_DIR.mkdir(parents=True, exist_ok=True)
+    """Persist market data. Writes to Postgres on Heroku, pickle locally.
 
+    The metadata sidecar is still written when the file backend is in use
+    so /api/cache-status keeps working in local dev.
+    """
     if not isinstance(data, pd.DataFrame):
         data = pd.DataFrame()
 
+    if _cache_backend() == "postgres":
+        ok = _pg_save(data)
+        if ok:
+            return
+        # If Postgres failed (e.g. transient network), fall through to
+        # the file backend so the worker run isn't a total loss.
+
+    CACHE_DIR.mkdir(parents=True, exist_ok=True)
     data.to_pickle(CACHE_DATA_PATH)
 
     payload = {

@@ -11,10 +11,12 @@ Then open:
 
 from datetime import datetime, timezone
 from pathlib import Path
+import os
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.middleware.gzip import GZipMiddleware
+from fastapi.staticfiles import StaticFiles
 
 # We import from `core` — the pure-Python layer with no web/UI dependencies.
 # This is the seam that lets us swap Streamlit out without rewriting the math.
@@ -51,9 +53,16 @@ app = FastAPI(
 #
 # allow_origins=["*"] is fine for a public read-only API. When we add auth
 # in Phase 2, lock this down to a specific domain.
+#
+# In production we read from ALLOWED_ORIGIN env var (comma-separated). The
+# Heroku deploy serves the frontend from the same origin via StaticFiles,
+# so CORS is mostly a non-issue there — this matters when you point a
+# different frontend (e.g. local dev) at the deployed API.
+_allowed = os.environ.get("ALLOWED_ORIGIN", "*")
+_origins = ["*"] if _allowed.strip() == "*" else [o.strip() for o in _allowed.split(",") if o.strip()]
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=_origins,
     allow_methods=["GET", "POST"],
     allow_headers=["*"],
 )
@@ -120,3 +129,15 @@ def cache_status():
         "rows": int(data.shape[0]) if not data.empty else 0,
         "columns": int(data.shape[1]) if not data.empty else 0,
     }
+
+
+# --- Static frontend ------------------------------------------------------
+# Serve the `web/` folder at the root so the API and the UI share an
+# origin. Same-origin means: no CORS preflights, cookies just work
+# (Phase 2 auth), and the user sees a single URL like quantdash.tech.
+#
+# IMPORTANT: this mount MUST be the last route registered. StaticFiles
+# matches every path under "/" so it would shadow /api/* if mounted earlier.
+_WEB_DIR = Path(__file__).resolve().parents[1] / "web"
+if _WEB_DIR.is_dir():
+    app.mount("/", StaticFiles(directory=str(_WEB_DIR), html=True), name="web")

@@ -7,3 +7,7 @@ scipy
 fastapi
 uvicorn[standard]
 lxml
+# Heroku deployment extras
+gunicorn
+psycopg[binary]
+

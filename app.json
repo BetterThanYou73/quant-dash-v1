@@ -1,0 +1,24 @@
+{
+  "name": "Quant Dash",
+  "description": "Quant Dash — quantitative dashboard with FastAPI backend and static frontend.",
+  "repository": "https://github.com/BetterThanYou73/quant-dash",
+  "keywords": ["fastapi", "quant", "dashboard", "yfinance"],
+  "stack": "heroku-22",
+  "addons": [
+    { "plan": "heroku-postgresql:mini" },
+    { "plan": "scheduler:standard" }
+  ],
+  "env": {
+    "ALLOWED_ORIGIN": {
+      "description": "Comma-separated list of allowed CORS origins. Use * for any (Phase 1).",
+      "value": "*"
+    },
+    "CACHE_BACKEND": {
+      "description": "Where to persist the worker pickle. 'postgres' (default on Heroku) or 'file'.",
+      "value": "postgres"
+    }
+  },
+  "formation": {
+    "web": { "quantity": 1, "size": "basic" }
+  }
+}
