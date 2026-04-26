@@ -581,6 +581,16 @@ nav {
   font-family: 'Space Mono', monospace;
   font-size: 11px;
   color: var(--text2);
+  /* Smooth scrolling + don't let scrolls "leak" to the page underneath
+     when reaching the modal's edges. `contain` is what makes the modal
+     feel like a real OS panel instead of bouncing the body. */
+  scroll-behavior: smooth;
+  overscroll-behavior: contain;
+  /* Promote to its own compositor layer so the sticky <thead> doesn't
+     race the row paints during fast scrolls (the bug where header text
+     and row text appeared overlapping). */
+  will-change: scroll-position;
+  scrollbar-gutter: stable;
 }
 
 /* Reusable table inside modals (Screener results, Portfolio holdings).
@@ -593,14 +603,29 @@ nav {
   /* Single bottom border via box-shadow so collapse=false doesn't double them. */
   box-shadow: inset 0 -1px 0 rgba(0,255,170,0.05);
 }
+/* Stick the entire <thead> as a unit AND each <th>. Sticking thead alone
+   isn't supported in older Safari; sticking th alone leaves a 1px paint
+   gap on fast scrolls in Chrome. Doing both is the belt-and-suspenders
+   approach that works everywhere. */
+.modal-table thead {
+  position: sticky;
+  top: 0;
+  z-index: 10;
+}
 .modal-table th {
   text-transform: uppercase; letter-spacing: 0.5px;
   color: var(--text3); font-size: 9px; font-weight: 700;
-  background: var(--bg2);            /* opaque so rows scroll behind cleanly */
-  position: sticky; top: 0; z-index: 2;
+  /* Explicit hex (not the var) guarantees opacity even if a future
+     theme variable goes semi-transparent. Critical for sticky headers. */
+  background: #0b1118;
+  position: sticky; top: 0; z-index: 10;
   box-shadow: inset 0 -1px 0 var(--border);
 }
 .modal-table th:first-child, .modal-table td:first-child { text-align: left; }
+/* Per-cell left-align for any column where right-align doesn't make sense
+   (categorical text like Sector, Signal). Add `lcol` class on the <th>
+   AND the matching <td> so header and body stay in lockstep. */
+.modal-table th.lcol, .modal-table td.lcol { text-align: left; }
 .modal-table tbody tr:hover td { background: rgba(0,255,170,0.04); }
 .modal-table .pos { color: var(--success); }
 .modal-table .neg { color: var(--danger); }

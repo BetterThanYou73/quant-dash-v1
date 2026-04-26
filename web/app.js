@@ -1310,11 +1310,11 @@ async function _runScreener() {
     }
     const rows = data.results.map(r => `
       <tr>
-        <td><strong>${r.Ticker}</strong> <span style="color:var(--text3)">${r.Name || ""}</span></td>
-        <td>${r.Sector || "—"}</td>
+        <td class="lcol"><strong>${r.Ticker}</strong> <span style="color:var(--text3)">${r.Name || ""}</span></td>
+        <td class="lcol">${r.Sector || "—"}</td>
         <td>${r.Composite_Z >= 0 ? "+" : ""}${r.Composite_Z}</td>
         <td>${r.Composite_Percentile}%</td>
-        <td>${r.Signal}</td>
+        <td class="lcol">${r.Signal}</td>
         <td class="${(r.Momentum_12_1||0)>=0?'pos':'neg'}">${fmtPct(r.Momentum_12_1)}</td>
         <td>${fmtPrice(r.Price)}</td>
       </tr>`).join("");
@@ -1324,8 +1324,11 @@ async function _runScreener() {
       </div>
       <table class="modal-table">
         <thead><tr>
-          <th style="text-align:left">Ticker</th><th style="text-align:left">Sector</th>
-          <th>Composite Z</th><th>Pctl</th><th>Signal</th><th>Mom 12-1</th><th>Price</th>
+          <th class="lcol">Ticker</th>
+          <th class="lcol">Sector</th>
+          <th>Composite Z</th><th>Pctl</th>
+          <th class="lcol">Signal</th>
+          <th>Mom 12-1</th><th>Price</th>
         </tr></thead>
         <tbody>${rows}</tbody>
       </table>`;
