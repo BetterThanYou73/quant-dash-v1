@@ -105,3 +105,67 @@ def refresh_market_data_cache(tickers=None, period="1y"):
     return data, cache_ts
 
 
+# --- Batched fetch for large universes ------------------------------------
+# yfinance is unreliable when asked for 500+ tickers in a single call —
+# the response either truncates silently or raises a JSON decode error.
+# Fetching in chunks of ~50 with a small inter-batch sleep is the standard
+# workaround. We concat the per-batch DataFrames at the end.
+
+def fetch_stock_data_batched(tickers, period="2y", batch_size=50, pause_seconds=0.5):
+    """Fetch many tickers from yfinance in chunks and concatenate the result.
+
+    Returns a DataFrame with the same MultiIndex column shape that
+    fetch_stock_data() produces. Empty if every batch failed.
+    """
+    import time as _time  # local import keeps top-of-file imports clean
+
+    syms = sorted({str(t).strip().upper() for t in (tickers or []) if str(t).strip()})
+    if not syms:
+        return pd.DataFrame()
+
+    pieces = []
+    total_batches = (len(syms) + batch_size - 1) // batch_size
+
+    for batch_index in range(total_batches):
+        batch = syms[batch_index * batch_size : (batch_index + 1) * batch_size]
+        print(f"[data_engine] batch {batch_index + 1}/{total_batches}: fetching {len(batch)} tickers")
+        try:
+            chunk = yf.download(
+                tickers=" ".join(batch),
+                period=period,
+                group_by="column",
+                progress=False,
+                auto_adjust=False,
+                threads=True,
+            )
+        except Exception as exc:
+            print(f"[data_engine]   batch {batch_index + 1} failed: {exc}")
+            continue
+
+        if isinstance(chunk, pd.DataFrame) and not chunk.empty:
+            pieces.append(chunk)
+
+        # Be polite to yahoo's servers between batches.
+        if batch_index < total_batches - 1:
+            _time.sleep(pause_seconds)
+
+    if not pieces:
+        return pd.DataFrame()
+
+    # Concatenate side-by-side on the column axis. The date index aligns
+    # naturally; missing values land as NaN and downstream code already
+    # handles those (factor calcs require dropna anyway).
+    merged = pd.concat(pieces, axis=1)
+    return merged
+
+
+def refresh_market_data_cache_batched(tickers, period="2y", batch_size=50):
+    """Batched variant of refresh_market_data_cache() — overwrites cache."""
+    data = fetch_stock_data_batched(tickers, period=period, batch_size=batch_size)
+    if data.empty:
+        return pd.DataFrame(), None
+    save_market_data_cache(data)
+    _, cache_ts = load_cached_market_data()
+    return data, cache_ts
+
+
