@@ -21,6 +21,9 @@ from core import data_engine as de
 
 # Route modules. Each one defines an APIRouter we mount below.
 from backend import routes_signals
+from backend import routes_quote
+from backend import routes_pairs
+from backend import routes_risk
 
 
 # --- App instance ---------------------------------------------------------
@@ -53,6 +56,9 @@ app.add_middleware(
 
 # Mount the modular routers. Each call adds a group of endpoints to the app.
 app.include_router(routes_signals.router)
+app.include_router(routes_quote.router)
+app.include_router(routes_pairs.router)
+app.include_router(routes_risk.router)
 
 
 @app.get("/api/health")
