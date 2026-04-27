@@ -79,7 +79,11 @@ def ensure_schema() -> None:
                 """)
                 # Idempotent migration for existing deploys.
                 cur.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS display_name TEXT")
+                cur.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS email_digest_enabled BOOLEAN DEFAULT FALSE")
+                cur.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS email_digest_include_ai BOOLEAN DEFAULT TRUE")
+                cur.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS email_digest_last_sent TIMESTAMPTZ")
                 cur.execute("CREATE INDEX IF NOT EXISTS idx_users_email ON users(LOWER(email))")
+                cur.execute("CREATE INDEX IF NOT EXISTS idx_users_digest ON users(email_digest_enabled) WHERE email_digest_enabled = TRUE")
             else:
                 cur.execute("""
                     CREATE TABLE IF NOT EXISTS users (
@@ -96,6 +100,12 @@ def ensure_schema() -> None:
                 cols = {row[1] for row in cur.fetchall()}
                 if "display_name" not in cols:
                     cur.execute("ALTER TABLE users ADD COLUMN display_name TEXT")
+                if "email_digest_enabled" not in cols:
+                    cur.execute("ALTER TABLE users ADD COLUMN email_digest_enabled INTEGER DEFAULT 0")
+                if "email_digest_include_ai" not in cols:
+                    cur.execute("ALTER TABLE users ADD COLUMN email_digest_include_ai INTEGER DEFAULT 1")
+                if "email_digest_last_sent" not in cols:
+                    cur.execute("ALTER TABLE users ADD COLUMN email_digest_last_sent TEXT")
                 cur.execute("CREATE INDEX IF NOT EXISTS idx_users_email ON users(email)")
         _SCHEMA_READY = True
 
@@ -230,6 +240,98 @@ def update_display_name(user_id: int, name: Optional[str]) -> Optional[dict]:
         )
         c.commit()
     return find_user_by_id(user_id)
+
+
+# ---- digest prefs --------------------------------------------------------
+# Stored on the users row directly (cheap, single read with login).
+# `enabled`: master opt-in. `include_ai`: spend their BYOK Anthropic key
+# on a daily commentary section. `last_sent`: cron uses this for dedupe
+# so a re-run within the same UTC day doesn't double-mail.
+
+def get_digest_prefs(user_id: int) -> dict:
+    """Return {enabled, include_ai, last_sent_utc}. Defaults if user not found."""
+    ensure_schema()
+    ph = pdb._placeholder()
+    with pdb._conn() as c:
+        cur = c.cursor()
+        cur.execute(
+            f"SELECT email_digest_enabled, email_digest_include_ai, email_digest_last_sent "
+            f"FROM users WHERE id = {ph}",
+            (int(user_id),),
+        )
+        row = cur.fetchone()
+    if not row:
+        return {"enabled": False, "include_ai": True, "last_sent_utc": None}
+    return {
+        "enabled": bool(row[0]),
+        "include_ai": bool(row[1]) if row[1] is not None else True,
+        "last_sent_utc": str(row[2]) if row[2] else None,
+    }
+
+
+def set_digest_prefs(user_id: int, enabled: bool, include_ai: bool) -> dict:
+    """Persist the user's digest preferences and return the new state."""
+    ensure_schema()
+    ph = pdb._placeholder()
+    # SQLite stores bools as 0/1; pass python bool — both psycopg and
+    # sqlite3 adapt it to the right type.
+    with pdb._conn() as c:
+        cur = c.cursor()
+        cur.execute(
+            f"UPDATE users SET email_digest_enabled = {ph}, email_digest_include_ai = {ph} "
+            f"WHERE id = {ph}",
+            (bool(enabled), bool(include_ai), int(user_id)),
+        )
+        c.commit()
+    return get_digest_prefs(user_id)
+
+
+def mark_digest_sent(user_id: int) -> None:
+    """Stamp last_sent_utc = now(). Called after a successful send so the
+    cron can skip users we've already mailed today."""
+    ensure_schema()
+    ph = pdb._placeholder()
+    with pdb._conn() as c:
+        cur = c.cursor()
+        if pdb._backend() == "postgres":
+            cur.execute(
+                f"UPDATE users SET email_digest_last_sent = now() WHERE id = {ph}",
+                (int(user_id),),
+            )
+        else:
+            cur.execute(
+                f"UPDATE users SET email_digest_last_sent = datetime('now') WHERE id = {ph}",
+                (int(user_id),),
+            )
+        c.commit()
+
+
+def list_digest_subscribers() -> list[dict]:
+    """All users with email_digest_enabled = TRUE.
+
+    Returns rows of {id, email, display_name, include_ai, last_sent_utc}.
+    The cron uses this list to fan out daily mail.
+    """
+    ensure_schema()
+    with pdb._conn() as c:
+        cur = c.cursor()
+        # No placeholder needed — boolean literal.
+        cur.execute(
+            "SELECT id, email, display_name, email_digest_include_ai, email_digest_last_sent "
+            "FROM users WHERE email_digest_enabled = "
+            + ("TRUE" if pdb._backend() == "postgres" else "1")
+        )
+        rows = cur.fetchall()
+    return [
+        {
+            "id": int(r[0]),
+            "email": r[1],
+            "display_name": r[2],
+            "include_ai": bool(r[3]) if r[3] is not None else True,
+            "last_sent_utc": str(r[4]) if r[4] else None,
+        }
+        for r in rows
+    ]
 
 
 # ---- device → user portfolio migration ----------------------------------

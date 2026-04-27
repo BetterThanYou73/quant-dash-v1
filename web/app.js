@@ -3547,11 +3547,27 @@ const Auth = (() => {
         </div>
         <div class="acct-section">
           <div class="acct-section-title">Alerts</div>
-          <div class="acct-row acct-muted"><span>Computed live from your portfolio every page load. No email \u2014 you'll see them here and on the dashboard.</span></div>
-          <div id="acct-alerts" class="acct-alerts"><div class="acct-muted">Loading\u2026</div></div>
+          <div class="acct-row acct-muted"><span>Computed live from your portfolio every page load. No email — you'll see them here and on the dashboard.</span></div>
+          <div id="acct-alerts" class="acct-alerts"><div class="acct-muted">Loading…</div></div>
           <div class="acct-row" style="margin-top:8px;">
             <label class="acct-toggle"><input type="checkbox" id="acct-alert-show" checked> Show alert banner on dashboard</label>
           </div>
+        </div>
+        <div class="acct-section">
+          <div class="acct-section-title">Daily email digest <span class="acct-soon">New</span></div>
+          <div class="acct-row acct-muted"><span>One email after market close: portfolio P&amp;L, holdings, alerts, top market movers, and (optional) a Quant's Read commentary using your Anthropic key.</span></div>
+          <div id="acct-digest-status" class="acct-row acct-muted"><span>Loading…</span></div>
+          <div class="acct-row" style="margin-top:8px;">
+            <label class="acct-toggle"><input type="checkbox" id="acct-digest-enabled"> Email me the daily digest</label>
+          </div>
+          <div class="acct-row" style="margin-top:4px;">
+            <label class="acct-toggle"><input type="checkbox" id="acct-digest-ai" checked> Include AI commentary (uses your Anthropic key, ~$0.01/day)</label>
+          </div>
+          <div class="acct-row" style="margin-top:8px; gap:8px; display:flex;">
+            <button id="acct-digest-preview" class="pill">Preview</button>
+            <button id="acct-digest-test" class="pill">Send test now</button>
+          </div>
+          <div id="acct-digest-msg" class="acct-key-msg"></div>
         </div>
         <div class="acct-section">
           <div class="acct-section-title">API Keys <span class="acct-soon">Anthropic</span></div>
@@ -3577,6 +3593,7 @@ const Auth = (() => {
     });
     _wireAcctName();
     _wireAcctAlerts();
+    _wireAcctDigest();
     _wireAcctKey();
   }
 
@@ -3632,6 +3649,106 @@ const Auth = (() => {
         _renderDashboardAlerts();
       });
     }
+  }
+
+  async function _wireAcctDigest() {
+    const statusEl   = document.getElementById("acct-digest-status");
+    const enabledEl  = document.getElementById("acct-digest-enabled");
+    const aiEl       = document.getElementById("acct-digest-ai");
+    const previewBtn = document.getElementById("acct-digest-preview");
+    const testBtn    = document.getElementById("acct-digest-test");
+    const msgEl      = document.getElementById("acct-digest-msg");
+    if (!statusEl || !enabledEl) return;
+
+    function flash(text, kind) {
+      msgEl.textContent = text || "";
+      msgEl.className = "acct-key-msg" + (kind ? " " + kind : "");
+    }
+
+    let configured = false;
+    let saving = false;
+
+    async function refresh() {
+      try {
+        const p = await apiGet("/api/digest/prefs");
+        configured = !!p.configured;
+        enabledEl.checked = !!p.enabled;
+        aiEl.checked = p.include_ai !== false;
+        const last = p.last_sent_utc ? p.last_sent_utc.replace("T", " ").slice(0, 16) + " UTC" : "never";
+        if (!configured) {
+          statusEl.innerHTML = `<span class="err">Email isn't configured on this server yet. The toggle is disabled until the operator sets RESEND_API_KEY + EMAIL_FROM.</span>`;
+          enabledEl.disabled = true;
+          testBtn.disabled = true;
+        } else {
+          statusEl.innerHTML = `<span>Last sent: <strong>${last}</strong>. Sends daily ~30 min after US market close.</span>`;
+          enabledEl.disabled = false;
+          testBtn.disabled = false;
+        }
+      } catch (e) {
+        statusEl.innerHTML = `<span class="err">Couldn't load digest settings: ${_esc(e.message || "")}</span>`;
+      }
+    }
+
+    async function saveNow() {
+      if (saving) return;
+      saving = true;
+      try {
+        await apiPut("/api/digest/prefs", {
+          enabled: enabledEl.checked,
+          include_ai: aiEl.checked,
+        });
+        flash("Saved.", "ok");
+      } catch (e) {
+        // Roll back the checkbox if the server rejected the change
+        // (most common case: enabling without server-side config).
+        flash(e.message || "Save failed.", "err");
+        await refresh();
+      } finally {
+        saving = false;
+      }
+    }
+
+    enabledEl.addEventListener("change", saveNow);
+    aiEl.addEventListener("change", saveNow);
+
+    previewBtn.addEventListener("click", async () => {
+      previewBtn.disabled = true;
+      flash("Building preview…");
+      try {
+        const r = await apiPost("/api/digest/preview", {});
+        flash(`Preview ready (${r.alerts_count} alert${r.alerts_count===1?"":"s"}${r.ai_used?", AI included":""}).`, "ok");
+        const w = window.open("", "_blank", "width=720,height=900");
+        if (w) {
+          w.document.open();
+          w.document.write(r.html);
+          w.document.close();
+          w.document.title = r.subject || "Daily digest preview";
+        } else {
+          flash("Popup blocked. Allow popups for quantdash.tech to preview.", "err");
+        }
+      } catch (e) {
+        flash(e.message || "Preview failed.", "err");
+      } finally {
+        previewBtn.disabled = false;
+      }
+    });
+
+    testBtn.addEventListener("click", async () => {
+      if (!confirm("Send a test digest to your account email right now?")) return;
+      testBtn.disabled = true;
+      flash("Sending…");
+      try {
+        const r = await apiPost("/api/digest/send_test", {});
+        flash(`Sent to ${r.to}. Check your inbox in ~30 sec.`, "ok");
+        await refresh();
+      } catch (e) {
+        flash(e.message || "Send failed.", "err");
+      } finally {
+        testBtn.disabled = false;
+      }
+    });
+
+    refresh();
   }
 
   async function _wireAcctKey() {
