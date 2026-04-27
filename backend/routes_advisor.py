@@ -160,18 +160,34 @@ class ChatIn(BaseModel):
     include_portfolio: bool = Field(True, description="Attach a compact summary of the user's portfolio to the system prompt.")
 
 
-_SYSTEM_PROMPT = """You are an embedded portfolio analyst inside Quant Dash, a quantitative dashboard.
-You help the user understand their holdings, factor exposures, and the screener results.
+_SYSTEM_PROMPT = """You are the in-app investment advisor inside Quant Dash.
+The user is a sophisticated retail investor who already understands risk and has
+explicitly asked for direct opinions. Treat them like an adult.
 
-Style:
-- Be concise. 2-6 short paragraphs unless asked for depth.
-- Plain text only — no Markdown headings, no emoji, no tables.
-- When asked for opinions on individual tickers, ground them in the factor scores
-  (Composite Z, Beta, Sortino, Momentum) the dashboard already computed.
-- You are NOT a registered advisor; if asked for personal financial advice,
-  remind the user briefly and continue with educational analysis.
-- Never invent prices, ratios, or news. If you don't have a number from the
-  context provided, say so."""
+How to talk:
+- Be direct and opinionated. Take a position. If they ask "what should I buy",
+  pick something from the screener data and say why. Don't beat around the bush.
+- Concise: 2-5 short paragraphs. Plain text, no markdown headings, no emoji,
+  no tables, no bullet-point spam.
+- The legal disclaimer ("not a registered advisor") is shown permanently in the
+  UI footer below the chat. DO NOT repeat it in every reply. Mention it only
+  ONCE per conversation, and only if the user asks for advice on something
+  exotic (margin, options, leverage > 3x). Otherwise just answer the question.
+- When they ask "what's the best stock right now" or similar, name a specific
+  ticker from the SCREENER TOP PICKS block, explain the factor case for it
+  (composite Z, momentum, beta, sector tailwind), and say the trade-offs.
+  "I can't tell you what to buy" is the wrong answer — the screener already
+  ranked the universe; tell them what it ranks highly.
+- Use the user's portfolio data to ground takes (concentration, weighted beta,
+  sector mix). When suggesting new buys, factor in what they already hold so
+  you're not doubling exposure.
+- Never invent prices, ratios, or news. If a number isn't in the context,
+  say you don't have it.
+- For day-trading / short-horizon questions: be honest about expected drawdowns
+  and that the factor model is a 1-3 month horizon, not intraday. Don't refuse
+  to engage \u2014 give them the most reasonable read of the data.
+
+Tone: a sharp friend who actually trades, not a compliance officer."""
 
 
 def _portfolio_context(user_id: int) -> str:
@@ -208,6 +224,45 @@ def _portfolio_context(user_id: int) -> str:
         lines.append("Sector exposure: " + ", ".join(
             f"{s.get('sector')} {(s.get('weight') or 0) * 100:.0f}%" for s in sectors[:8]
         ))
+
+    # ---- Screener top picks --------------------------------------------
+    # Reuse the universe-signals memo so this is microseconds on cache hit.
+    # We surface the top 12 Strong Buys + a couple of "Avoid" exposures the
+    # user holds, so the model has concrete tickers to recommend instead
+    # of refusing to name names.
+    try:
+        import core.signals as sig
+        data, cache_ts = de.get_market_data()
+        if not data.empty:
+            close_all = sig.extract_close_prices(data)
+            vols_all = sig.extract_volumes(data)
+            bench = close_all.get(pf_routes._BENCHMARK_TICKER)
+            if bench is not None and not close_all.empty:
+                universe_close = close_all.drop(columns=[pf_routes._BENCHMARK_TICKER], errors="ignore")
+                universe_vols = vols_all.drop(columns=[pf_routes._BENCHMARK_TICKER], errors="ignore") if not vols_all.empty else None
+                sig_df = pf_routes._get_universe_signals(universe_close, universe_vols, bench, cache_ts)
+                if sig_df is not None and not sig_df.empty:
+                    held = {r.get("ticker") for r in rows}
+                    # Filter to Strong Buys not already held, then top by Composite_Z.
+                    sb = sig_df[sig_df["Signal"].astype(str).str.lower().isin(["strong buy", "strong_buy"])]
+                    sb = sb[~sb["Ticker"].isin(held)]
+                    sb = sb.sort_values("Composite_Z", ascending=False).head(12)
+                    if not sb.empty:
+                        lines.append("Screener top picks (Strong Buy, ranked by composite z, not currently held):")
+                        def _fmt(x):
+                            try: return f"{float(x):.2f}"
+                            except Exception: return "n/a"
+                        for _, r in sb.iterrows():
+                            sec = r.get("Sector") or "Unknown"
+                            lines.append(
+                                f"  - {r['Ticker']} ({sec}): z={_fmt(r.get('Composite_Z'))}, "
+                                f"beta={_fmt(r.get('Beta'))}, mom12-1={_fmt(r.get('Momentum_12_1'))}."
+                            )
+    except Exception:
+        # Screener context is best-effort \u2014 if it fails, the chat still works
+        # with just portfolio data.
+        pass
+
     return "\n".join(lines)
 
 
