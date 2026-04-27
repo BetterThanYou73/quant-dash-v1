@@ -1847,11 +1847,40 @@ function _renderAdvEmpty() {
   });
 }
 
+// Per-user (or per-device) chat history persistence. Keyed by the user's
+// id when signed in so two accounts on one browser don't share threads;
+// falls back to a stable "anon" key for the rare BYOK-but-anonymous flow
+// (won't actually happen since /api/advisor requires auth, but harmless).
+function _advHistKey() {
+  const u = (typeof Auth !== "undefined" && Auth.user && Auth.user()) || null;
+  return "qd.adv.hist." + (u && (u.id || u.email) ? String(u.id || u.email) : "anon");
+}
+const _ADV_HIST_MAX = 40;  // cap stored turns to keep localStorage small
+
+function _advLoadHistory() {
+  try {
+    const raw = localStorage.getItem(_advHistKey());
+    if (!raw) return [];
+    const arr = JSON.parse(raw);
+    return Array.isArray(arr) ? arr : [];
+  } catch (_) { return []; }
+}
+function _advSaveHistory(arr) {
+  try {
+    const trimmed = arr.slice(-_ADV_HIST_MAX);
+    localStorage.setItem(_advHistKey(), JSON.stringify(trimmed));
+  } catch (_) { /* quota exceeded - ignore */ }
+}
+function _advClearHistory() {
+  try { localStorage.removeItem(_advHistKey()); } catch (_) {}
+}
+
 function _wireAdvChat() {
   const log    = document.getElementById("adv-log");
   const input  = document.getElementById("adv-input");
   const send   = document.getElementById("adv-send");
   const model  = document.getElementById("adv-model");
+  const clearBtn = document.getElementById("adv-clear");
   if (!log || send.dataset.wired) return;
   send.dataset.wired = "1";
 
@@ -1869,6 +1898,16 @@ function _wireAdvChat() {
     return div.querySelector(".adv-text");
   }
 
+  // Restore prior turns from localStorage on first wire of this page-load.
+  const history = _advLoadHistory();
+  if (history.length) {
+    const empty = log.querySelector(".adv-empty");
+    if (empty) empty.remove();
+    for (const turn of history) {
+      appendMsg(turn.role, turn.text);
+    }
+  }
+
   async function submit() {
     const msg = input.value.trim();
     if (!msg) return;
@@ -1882,7 +1921,13 @@ function _wireAdvChat() {
         model: model.value,
         include_portfolio: true,
       });
-      placeholder.textContent = r.answer || "(no response)";
+      const answer = r.answer || "(no response)";
+      placeholder.textContent = answer;
+      // Persist on success only \u2014 errors aren't worth re-loading.
+      const cur = _advLoadHistory();
+      cur.push({ role: "user", text: msg });
+      cur.push({ role: "bot",  text: answer });
+      _advSaveHistory(cur);
     } catch (e) {
       placeholder.textContent = "Error: " + (e.message || "unknown");
       placeholder.parentElement.classList.add("err");
@@ -1896,6 +1941,15 @@ function _wireAdvChat() {
   input.addEventListener("keydown", (e) => {
     if (e.key === "Enter" && (e.ctrlKey || e.metaKey)) submit();
   });
+  if (clearBtn && !clearBtn.dataset.wired) {
+    clearBtn.dataset.wired = "1";
+    clearBtn.addEventListener("click", () => {
+      if (!confirm("Clear this advisor chat? This only affects your browser.")) return;
+      _advClearHistory();
+      log.innerHTML = "";
+      _renderAdvEmpty();
+    });
+  }
 }
 
 async function _renderPortfolioPerf() {

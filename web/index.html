@@ -5,7 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>QuantDash — Quantitative Dashboard</title>
 <link href="https://fonts.googleapis.com/css2?family=Space+Mono:ital,wght@0,400;0,700;1,400&family=Syne:wght@400;600;700;800&display=swap" rel="stylesheet">
-<link rel="stylesheet" href="styles.css?v=26">
+<link rel="stylesheet" href="styles.css?v=27">
 </head>
 <body>
 
@@ -412,7 +412,8 @@
           <button id="adv-send" class="pill cta">Send</button>
         </div>
         <div class="adv-foot">
-          Educational analysis only. Not personal financial advice. Each call uses your Anthropic credits.
+          <button id="adv-clear" type="button" class="adv-clear-btn" title="Clear this conversation (browser-local).">Clear chat</button>
+          <span>Educational analysis only. Not personal financial advice. Each call uses your Anthropic credits.</span>
         </div>
       </div>
     </div>
@@ -493,6 +494,6 @@
 
 <!-- Order matters: config first (sets API_BASE), then app reads window.QD_CONFIG -->
 <script src="config.js"></script>
-<script src="app.js?v=26"></script>
+<script src="app.js?v=27"></script>
 </body>
 </html>
