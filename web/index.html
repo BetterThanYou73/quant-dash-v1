@@ -5,7 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>QuantDash — Quantitative Dashboard</title>
 <link href="https://fonts.googleapis.com/css2?family=Space+Mono:ital,wght@0,400;0,700;1,400&family=Syne:wght@400;600;700;800&display=swap" rel="stylesheet">
-<link rel="stylesheet" href="styles.css?v=30">
+<link rel="stylesheet" href="styles.css?v=31">
 </head>
 <body>
 
@@ -444,9 +444,27 @@
       </div>
       <div class="pf-popp-body">
         <div class="pf-popp-intro">Statistical arbitrage — long the undervalued name, short the overvalued one in a correlated pair. Profit when the spread reverts.</div>
+
+        <div class="pf-popp-tabs" id="pf-popp-tabs">
+          <button class="pf-popp-tab active" data-mode="curated" type="button">Curated</button>
+          <button class="pf-popp-tab" data-mode="bulk" type="button">Bulk Scan</button>
+          <button class="pf-popp-tab" data-mode="custom" type="button">Custom Tickers</button>
+        </div>
+
+        <div class="pf-popp-custom" id="pf-popp-custom" hidden>
+          <input id="pf-popp-tickers" class="field" type="text" autocomplete="off"
+                 placeholder="Comma-separated tickers, e.g. NVDA, AMD, INTC, AVGO, AMZN, GOOGL, META" />
+          <button id="pf-popp-scan" class="pill cta" type="button">Scan for pairs</button>
+        </div>
+
+        <div class="pf-popp-bulk" id="pf-popp-bulk" hidden>
+          <span class="pf-popp-hint">Scans ~40 large-cap names across sectors (~700 pairs). Returns only LONG/SHORT setups.</span>
+          <button id="pf-popp-bulk-go" class="pill cta" type="button">Run bulk scan</button>
+        </div>
+
         <div class="pf-popp-actions">
-          <button id="pf-popp-refresh" class="pill" type="button">↻ Refresh stats</button>
-          <button id="pf-popp-ai" class="pill cta" type="button">🧠 Get Quant's read on all pairs</button>
+          <button id="pf-popp-refresh" class="pill" type="button">↻ Refresh</button>
+          <button id="pf-popp-ai" class="pill cta" type="button" disabled>🧠 Get Quant's read on all pairs</button>
           <span class="pf-popp-hint" id="pf-popp-hint">AI commentary uses ~1 cheap Haiku call total.</span>
         </div>
         <div class="pf-popp-list" id="pf-popp-list">
@@ -528,6 +546,6 @@
 
 <!-- Order matters: config first (sets API_BASE), then app reads window.QD_CONFIG -->
 <script src="config.js"></script>
-<script src="app.js?v=30"></script>
+<script src="app.js?v=31"></script>
 </body>
 </html>

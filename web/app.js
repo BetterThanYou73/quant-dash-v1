@@ -2121,25 +2121,73 @@ const _POPP_NICKNAMES = {
 };
 
 let _POPP_LAST_DATA = null;  // cached so the AI button can reuse the rows
+let _POPP_MODE = "curated";  // "curated" | "bulk" | "custom"
 
 async function _renderPairsOpportunities() {
   const card = document.getElementById("pf-popp-card");
   if (!card) return;
-  const listEl = document.getElementById("pf-popp-list");
+  const tabsEl = document.getElementById("pf-popp-tabs");
   const refreshBtn = document.getElementById("pf-popp-refresh");
   const aiBtn = document.getElementById("pf-popp-ai");
+  const scanBtn = document.getElementById("pf-popp-scan");
+  const bulkBtn = document.getElementById("pf-popp-bulk-go");
+  const tickersEl = document.getElementById("pf-popp-tickers");
 
-  // Wire actions once.
+  // Wire tabs once.
+  if (tabsEl && !tabsEl.dataset.wired) {
+    tabsEl.dataset.wired = "1";
+    tabsEl.querySelectorAll(".pf-popp-tab").forEach(btn => {
+      btn.addEventListener("click", () => _setPoppMode(btn.dataset.mode));
+    });
+  }
   if (refreshBtn && !refreshBtn.dataset.wired) {
     refreshBtn.dataset.wired = "1";
-    refreshBtn.addEventListener("click", () => _loadPairsOpportunities());
+    refreshBtn.addEventListener("click", () => _runPoppForCurrentMode());
   }
   if (aiBtn && !aiBtn.dataset.wired) {
     aiBtn.dataset.wired = "1";
     aiBtn.addEventListener("click", () => _runPairsOpportunitiesAI());
   }
+  if (scanBtn && !scanBtn.dataset.wired) {
+    scanBtn.dataset.wired = "1";
+    scanBtn.addEventListener("click", () => _runCustomScan());
+    tickersEl?.addEventListener("keydown", (e) => { if (e.key === "Enter") _runCustomScan(); });
+  }
+  if (bulkBtn && !bulkBtn.dataset.wired) {
+    bulkBtn.dataset.wired = "1";
+    bulkBtn.addEventListener("click", () => _runBulkScan());
+  }
 
   await _loadPairsOpportunities();
+}
+
+function _setPoppMode(mode) {
+  _POPP_MODE = mode;
+  document.querySelectorAll("#pf-popp-tabs .pf-popp-tab").forEach(b => {
+    b.classList.toggle("active", b.dataset.mode === mode);
+  });
+  const customRow = document.getElementById("pf-popp-custom");
+  const bulkRow   = document.getElementById("pf-popp-bulk");
+  if (customRow) customRow.hidden = mode !== "custom";
+  if (bulkRow)   bulkRow.hidden   = mode !== "bulk";
+
+  const listEl = document.getElementById("pf-popp-list");
+  if (mode === "curated") {
+    _loadPairsOpportunities();
+  } else if (listEl) {
+    const msg = mode === "bulk"
+      ? "Click \u201cRun bulk scan\u201d to scan ~40 large-caps for active LONG/SHORT setups."
+      : "Enter your own tickers above and click Scan.";
+    listEl.innerHTML = `<div class="pf-popp-empty">${msg}</div>`;
+    _POPP_LAST_DATA = null;
+    document.getElementById("pf-popp-ai").disabled = true;
+  }
+}
+
+function _runPoppForCurrentMode() {
+  if (_POPP_MODE === "curated") return _loadPairsOpportunities();
+  if (_POPP_MODE === "bulk")    return _runBulkScan();
+  if (_POPP_MODE === "custom")  return _runCustomScan();
 }
 
 async function _loadPairsOpportunities() {
@@ -2157,6 +2205,77 @@ async function _loadPairsOpportunities() {
   } catch (e) {
     listEl.innerHTML = `<div class="pf-popp-empty">Couldn't load pairs: ${(e.message || "request failed")}</div>`;
     if (aiBtn) aiBtn.disabled = true;
+  }
+}
+
+async function _runBulkScan() {
+  const listEl = document.getElementById("pf-popp-list");
+  const aiBtn  = document.getElementById("pf-popp-ai");
+  const btn    = document.getElementById("pf-popp-bulk-go");
+  if (!listEl) return;
+  listEl.innerHTML = `<div class="pf-popp-empty">Scanning \u2026 (~700 pairs across large-cap universe)</div>`;
+  if (aiBtn) aiBtn.disabled = true;
+  if (btn) { btn.disabled = true; }
+
+  try {
+    const data = await apiPost("/api/pairs/scan", {});
+    _POPP_LAST_DATA = data;
+    if (!data.pairs || !data.pairs.length) {
+      listEl.innerHTML = `<div class="pf-popp-empty">No active LONG/SHORT setups in the universe right now (${data.candidates_scanned || 0} pairs above ${(data.min_correlation*100).toFixed(0)}% correlation; all sitting in neutral/exit zone). Try later.</div>`;
+    } else {
+      _renderPairsOpportunitiesRows(data, null);
+      if (aiBtn) aiBtn.disabled = false;
+    }
+  } catch (e) {
+    listEl.innerHTML = `<div class="pf-popp-empty">Scan failed: ${(e.message || "request failed")}</div>`;
+  } finally {
+    if (btn) btn.disabled = false;
+  }
+}
+
+async function _runCustomScan() {
+  const listEl = document.getElementById("pf-popp-list");
+  const aiBtn  = document.getElementById("pf-popp-ai");
+  const tickersEl = document.getElementById("pf-popp-tickers");
+  const btn    = document.getElementById("pf-popp-scan");
+  if (!listEl || !tickersEl) return;
+
+  const raw = (tickersEl.value || "").trim();
+  if (!raw) {
+    listEl.innerHTML = `<div class="pf-popp-empty">Enter at least 2 tickers above.</div>`;
+    return;
+  }
+  const tickers = raw.split(/[\s,;]+/).map(s => s.trim().toUpperCase()).filter(Boolean);
+  if (tickers.length < 2) {
+    listEl.innerHTML = `<div class="pf-popp-empty">Need at least 2 tickers \u2014 you gave ${tickers.length}.</div>`;
+    return;
+  }
+
+  listEl.innerHTML = `<div class="pf-popp-empty">Scanning ${tickers.length} tickers (${(tickers.length*(tickers.length-1)/2)|0} possible pairs)\u2026</div>`;
+  if (aiBtn) aiBtn.disabled = true;
+  if (btn) btn.disabled = true;
+
+  try {
+    const data = await apiPost("/api/pairs/scan", { tickers });
+    _POPP_LAST_DATA = data;
+    const missingNote = (data.missing_tickers && data.missing_tickers.length)
+      ? `<div class="pf-popp-empty" style="text-align:left;">Not in cache: <strong>${data.missing_tickers.join(", ")}</strong></div>`
+      : "";
+    if (!data.pairs || !data.pairs.length) {
+      listEl.innerHTML =
+        missingNote +
+        `<div class="pf-popp-empty">Scanned ${data.candidates_scanned || 0} pairs above ${(data.min_correlation*100).toFixed(0)}% correlation \u2014 none have an active LONG/SHORT setup right now.</div>`;
+    } else {
+      _renderPairsOpportunitiesRows(data, null);
+      if (missingNote) {
+        listEl.insertAdjacentHTML("afterbegin", missingNote);
+      }
+      if (aiBtn) aiBtn.disabled = false;
+    }
+  } catch (e) {
+    listEl.innerHTML = `<div class="pf-popp-empty">Scan failed: ${(e.message || "request failed")}</div>`;
+  } finally {
+    if (btn) btn.disabled = false;
   }
 }
 
@@ -2184,7 +2303,7 @@ function _renderPairsOpportunitiesRows(data, notes) {
           ? `<div class="pf-popp-note muted">No commentary returned for this pair.</div>`
           : "");
     return `
-      <div class="pf-popp-row" data-pair="${key}">
+      <div class="pf-popp-row" data-pair="${key}" data-a="${p.a}" data-b="${p.b}" title="Click to load full chart + analysis below">
         <div class="pf-popp-tk">
           <span class="pf-popp-tk-sym">${p.a}</span>
           <span class="pf-popp-tk-sub">${_POPP_NICKNAMES[p.a] || p.a}</span>
@@ -2206,6 +2325,27 @@ function _renderPairsOpportunitiesRows(data, notes) {
       </div>`;
   }).join("");
   listEl.innerHTML = rows;
+
+  // Wire click-to-analyze: drops the pair into the detail card below
+  // and runs it. Scrolls so the user sees the chart appear.
+  listEl.querySelectorAll(".pf-popp-row").forEach(row => {
+    row.addEventListener("click", () => {
+      const a = row.dataset.a;
+      const b = row.dataset.b;
+      _analyzePairFromOpportunity(a, b);
+    });
+  });
+}
+
+function _analyzePairFromOpportunity(a, b) {
+  const aEl  = document.getElementById("pf-pairs-a");
+  const bEl  = document.getElementById("pf-pairs-b");
+  const goEl = document.getElementById("pf-pairs-go");
+  if (!aEl || !bEl || !goEl) return;
+  aEl.value = a;
+  bEl.value = b;
+  document.getElementById("pf-pairs-card")?.scrollIntoView({ behavior: "smooth", block: "start" });
+  goEl.click();
 }
 
 function _formatPairSignal(sigU, a, b) {
