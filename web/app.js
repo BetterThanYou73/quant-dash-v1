@@ -2047,6 +2047,17 @@ function _wirePortfolioPairs(positions) {
           plugins: { legend: { labels: { boxWidth: 10, color: "#b8b8c5", font: { size: 10 } } } },
         },
       });
+
+      // Fire-and-forget AI commentary. Non-blocking — chart renders first.
+      _explainPairs({
+        a, b,
+        lookback_days: parseInt(lookback, 10) || 252,
+        hedge_ratio_beta: beta,
+        current_z: z,
+        signal: sig,
+        spread_mean: data.spread_mean,
+        spread_std: data.spread_std,
+      });
     } catch (e) {
       _setPairsStatus(stEl, "Error: " + (e.message || "request failed"), "err");
       sgEl.textContent = "\u2014"; sgEl.className = "pf-badge pf-badge-o";
@@ -2060,6 +2071,32 @@ function _wirePortfolioPairs(positions) {
 
   // Auto-run on first wire so the card isn't empty.
   run();
+}
+
+async function _explainPairs(payload) {
+  const wrap = document.getElementById("pf-pairs-ai");
+  const body = document.getElementById("pf-pairs-ai-body");
+  if (!wrap || !body) return;
+  wrap.hidden = false;
+  body.className = "pf-pairs-ai-body muted";
+  body.textContent = "Quant is thinking\u2026";
+  try {
+    const res = await apiPost("/api/advisor/explain_pairs", payload);
+    body.className = "pf-pairs-ai-body";
+    body.textContent = res.answer || "(no response)";
+  } catch (e) {
+    const msg = (e && e.message) || "request failed";
+    if (msg.includes("412")) {
+      body.className = "pf-pairs-ai-body muted";
+      body.innerHTML = "Add an Anthropic API key in <strong>Account \u2192 API Keys</strong> to get Quant's read on this trade.";
+    } else if (msg.includes("401")) {
+      body.className = "pf-pairs-ai-body muted";
+      body.textContent = "Sign in and add an Anthropic key to enable AI commentary.";
+    } else {
+      body.className = "pf-pairs-ai-body err";
+      body.textContent = "Couldn't reach Quant: " + msg;
+    }
+  }
 }
 
 function _setPairsStatus(el, text, kind) {

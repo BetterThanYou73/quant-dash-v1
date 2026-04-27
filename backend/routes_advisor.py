@@ -327,3 +327,106 @@ def chat(body: ChatIn, request: Request, response: Response) -> dict:
         },
         "stop_reason": getattr(result, "stop_reason", None),
     }
+
+
+# ---- pairs explainer -----------------------------------------------------
+# Lightweight Claude call that takes a /api/pairs result + the two tickers
+# and returns a 2-3 sentence read combining the statistical signal (z-score,
+# hedge ratio) with macro / sector / news context the LLM holds. The point
+# is to bridge "pure stats" and "real-world context" — pairs trading needs
+# the human-judgment layer (is the relationship still structurally valid?
+# any catalyst breaking it?) that the cointegration math can't see.
+
+class PairsExplainIn(BaseModel):
+    a: str = Field(..., min_length=1, max_length=10)
+    b: str = Field(..., min_length=1, max_length=10)
+    lookback_days: int = Field(..., ge=20, le=2000)
+    hedge_ratio_beta: float
+    current_z: float
+    signal: str = Field(..., max_length=64)
+    spread_mean: Optional[float] = None
+    spread_std: Optional[float] = None
+    model: Optional[str] = Field(None, description="claude-haiku-4-5 (fast) or claude-sonnet-4-5 (deep)")
+
+
+_PAIRS_SYSTEM = """You are Quant, the in-app trading copilot inside Quant Dash.
+The user just ran a pairs-trading screen and wants your read on it.
+
+A pairs trade longs one stock and shorts a hedge-ratio-weighted amount of the
+other when their spread diverges from its rolling mean (z-score), betting on
+mean reversion. The math says nothing about WHY the spread is where it is or
+whether the relationship is still structurally sound. That's your job.
+
+In 3-5 short sentences, give the user a direct read. Cover:
+  1) What the z-score is saying (mean-reversion long/short setup, or no edge).
+  2) Whether the two names actually belong together as a pair (same sub-sector,
+     same demand drivers, similar size?). Call it out if they don't.
+  3) The macro / news / sentiment context you can think of: any recent
+     earnings, regulatory, sector-rotation, commodity, or rate-cycle reason
+     the spread might be diverging — and whether that breaks the trade or
+     supports it.
+  4) A practical take: "I'd take it", "I'd skip it", or "wait for X".
+
+Be direct. No disclaimers, no markdown headings, no bullet points, no emoji.
+Plain prose. If you don't know recent news for a ticker, say so — don't invent.
+Cap reply at ~140 words."""
+
+
+@router.post("/explain_pairs")
+def explain_pairs(body: PairsExplainIn, request: Request, response: Response) -> dict:
+    uid = _require_user(request)
+    response.headers["Cache-Control"] = "no-store"
+
+    model = body.model or _DEFAULT_MODEL
+    if model not in _ALLOWED_MODELS:
+        raise HTTPException(status_code=400, detail=f"Unsupported model. Allowed: {sorted(_ALLOWED_MODELS)}")
+
+    _check_rate_limit(uid)
+
+    api_key = secrets_db.get_user_key(uid, _PROVIDER)
+    if not api_key:
+        raise HTTPException(status_code=412, detail="No Anthropic key on file. Add one in Account → API Keys.")
+
+    a = body.a.upper().strip()
+    b = body.b.upper().strip()
+    user_msg = (
+        f"Pair: long {a} / short {b} (or reverse depending on signal).\n"
+        f"Lookback: {body.lookback_days} trading days.\n"
+        f"Hedge ratio (beta of {a} on {b}): {body.hedge_ratio_beta:.4f}\n"
+        f"Current z-score of the spread: {body.current_z:.2f}\n"
+        f"Engine signal: {body.signal}\n"
+    )
+    if body.spread_mean is not None and body.spread_std is not None:
+        user_msg += f"Spread rolling mean={body.spread_mean:.4f}, rolling std={body.spread_std:.4f}.\n"
+    user_msg += (
+        "\nGive me your read: is this a good setup, do these names actually pair, "
+        "and what macro / news / sentiment context should I be aware of right now?"
+    )
+
+    try:
+        import anthropic
+        client = anthropic.Anthropic(api_key=api_key)
+        result = client.messages.create(
+            model=model,
+            max_tokens=400,  # ~140 words + safety margin
+            system=_PAIRS_SYSTEM,
+            messages=[{"role": "user", "content": user_msg}],
+        )
+    except Exception as exc:
+        msg = str(exc)
+        if "401" in msg or "authentication" in msg.lower():
+            raise HTTPException(status_code=401, detail="Anthropic rejected the stored key. Update it in Account → API Keys.")
+        if "429" in msg or "rate" in msg.lower():
+            raise HTTPException(status_code=429, detail="Anthropic rate limit on your account. Try again shortly.")
+        raise HTTPException(status_code=502, detail="Anthropic call failed. Try again in a moment.")
+    finally:
+        api_key = None
+
+    text_parts = []
+    for block in (result.content or []):
+        text = getattr(block, "text", None)
+        if text:
+            text_parts.append(text)
+    answer = "".join(text_parts).strip() or "(no response)"
+
+    return {"model": model, "answer": answer}

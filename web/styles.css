@@ -1155,4 +1155,11 @@ nav {
 .pf-pairs-stats .err { color: #ff8092; }
 .pf-pairs-chart-wrap { position: relative; height: 200px; }
 .pf-pairs-foot { font-size: 10px; color: var(--text3, #8a8a99); line-height: 1.5; }
+
+/* Quant's AI read on a pairs run. Shown after /api/advisor/explain_pairs. */
+.pf-pairs-ai { background: rgba(0, 207, 255, 0.04); border: 1px solid rgba(0, 207, 255, 0.18); border-left: 3px solid #00cfff; border-radius: 6px; padding: 10px 12px; }
+.pf-pairs-ai-head { font-family: 'Syne', sans-serif; font-size: 11px; font-weight: 700; color: #00cfff; letter-spacing: 0.5px; margin-bottom: 6px; text-transform: uppercase; }
+.pf-pairs-ai-body { font-size: 12px; color: var(--text, #e5e5ee); line-height: 1.55; white-space: pre-wrap; }
+.pf-pairs-ai-body.muted { color: var(--text3, #8a8a99); font-style: italic; }
+.pf-pairs-ai-body.err   { color: #ff8092; }
 .pf-stub-text em { color: var(--text); font-style: normal; background: rgba(0,255,170,0.06); padding: 1px 5px; border-radius: 3px; }

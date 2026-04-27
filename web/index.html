@@ -5,7 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>QuantDash — Quantitative Dashboard</title>
 <link href="https://fonts.googleapis.com/css2?family=Space+Mono:ital,wght@0,400;0,700;1,400&family=Syne:wght@400;600;700;800&display=swap" rel="stylesheet">
-<link rel="stylesheet" href="styles.css?v=28">
+<link rel="stylesheet" href="styles.css?v=29">
 </head>
 <body>
 
@@ -385,7 +385,7 @@
        once /api/advisor/key reports has_key=true (or always for signed-in users). -->
   <div class="pf-card" id="pf-advisor-card">
     <div class="pf-card-header">
-      <div class="pf-card-title">AI Investment Advisor</div>
+      <div class="pf-card-title">🧠 Quant — AI Co-Pilot</div>
       <div class="adv-controls">
         <select id="adv-model" class="field adv-model" title="Model">
           <option value="claude-haiku-4-5" selected>Haiku — fast & cheap</option>
@@ -454,6 +454,10 @@
         </div>
         <div class="pf-pairs-stats" id="pf-pairs-stats">Pick two correlated names (e.g. KO/PEP, MSFT/AAPL, V/MA) and run.</div>
         <div class="pf-pairs-chart-wrap"><canvas id="pf-pairs-chart"></canvas></div>
+        <div class="pf-pairs-ai" id="pf-pairs-ai" hidden>
+          <div class="pf-pairs-ai-head">🧠 Quant's read</div>
+          <div class="pf-pairs-ai-body" id="pf-pairs-ai-body"></div>
+        </div>
         <div class="pf-pairs-foot">
           β = hedge ratio · z &gt; +2 → short A long B · z &lt; −2 → long A short B · |z| &lt; 0.5 → exit
         </div>
@@ -504,6 +508,6 @@
 
 <!-- Order matters: config first (sets API_BASE), then app reads window.QD_CONFIG -->
 <script src="config.js"></script>
-<script src="app.js?v=28"></script>
+<script src="app.js?v=29"></script>
 </body>
 </html>
