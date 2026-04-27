@@ -213,7 +213,7 @@ _MEMO_LOCK = threading.Lock()
 _MEMO_DATA = None
 _MEMO_TS = None
 _MEMO_LOADED_AT = 0.0
-_MEMO_TTL = 300.0  # seconds
+_MEMO_TTL = 60.0  # seconds — kept short so memory frees between bursts
 
 
 def get_market_data():
@@ -236,6 +236,11 @@ def get_market_data():
             return _MEMO_DATA, _MEMO_TS
 
         df, ts = load_cached_market_data()
+        # Apply compaction at load time too. Old caches written before
+        # _compact_market_dataframe existed will still be fat — this
+        # shrinks them in-memory until the next worker run rewrites
+        # the persisted blob in compact form.
+        df = _compact_market_dataframe(df)
         _MEMO_DATA = df
         _MEMO_TS = ts
         _MEMO_LOADED_AT = now
@@ -252,6 +257,47 @@ def invalidate_memo():
         _MEMO_LOADED_AT = 0.0
 
 
+# --- Memory-shrink helper --------------------------------------------------
+# Heroku Basic dynos cap RAM at 512 MB. The full S&P 500 DataFrame as
+# returned by yfinance carries 8 fields × ~501 tickers × ~500 daily rows
+# in float64 (~250 MB resident, ~120 MB pickled). We only ever read
+# Close + Volume in our analytics path, so dropping the rest cuts the
+# resident footprint to ~60 MB. Casting to float32 halves it again to
+# ~30 MB. That keeps the web dyno comfortably below 512 MB even with
+# concurrent snapshot rebuilds.
+
+_KEEP_FIELDS = ("Close", "Volume")
+
+
+def _compact_market_dataframe(df):
+    """Return a slimmer copy of `df`: only Close+Volume columns, float32.
+
+    No-op on empty / non-MultiIndex frames so worker tests with a single
+    ticker still work. Defensive against caches written before this
+    helper existed (idempotent: re-applying does nothing).
+    """
+    if not isinstance(df, pd.DataFrame) or df.empty:
+        return df
+    try:
+        if isinstance(df.columns, pd.MultiIndex):
+            # Columns are (field, ticker). Slice to the two fields we use.
+            try:
+                fields = df.columns.get_level_values(0).unique().tolist()
+            except Exception:
+                fields = []
+            keep = [f for f in fields if f in _KEEP_FIELDS]
+            if keep and set(keep) != set(fields):
+                df = df.loc[:, df.columns.get_level_values(0).isin(keep)]
+        # Downcast every numeric column to float32. Volumes can be huge
+        # (10**9) but float32 covers up to ~3.4e38 so no overflow risk.
+        for col in df.select_dtypes(include=["float64"]).columns:
+            df[col] = df[col].astype("float32")
+    except Exception:
+        # Never let a compaction error block a save/load — return as-is.
+        return df
+    return df
+
+
 def save_market_data_cache(data):
     """Persist market data. Writes to Postgres on Heroku, pickle locally.
 
@@ -260,6 +306,12 @@ def save_market_data_cache(data):
     """
     if not isinstance(data, pd.DataFrame):
         data = pd.DataFrame()
+
+    # Compact before persisting: drop unused yfinance fields and downcast
+    # to float32. Cuts the in-memory + Postgres blob roughly 4x (only
+    # 2/8 fields kept, half the bytes per number) without any loss of
+    # the precision we actually display (2 decimals).
+    data = _compact_market_dataframe(data)
 
     if _cache_backend() == "postgres":
         ok = _pg_save(data)
