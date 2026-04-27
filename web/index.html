@@ -5,7 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>QuantDash — Quantitative Dashboard</title>
 <link href="https://fonts.googleapis.com/css2?family=Space+Mono:ital,wght@0,400;0,700;1,400&family=Syne:wght@400;600;700;800&display=swap" rel="stylesheet">
-<link rel="stylesheet" href="styles.css?v=29">
+<link rel="stylesheet" href="styles.css?v=30">
 </head>
 <body>
 
@@ -435,6 +435,26 @@
         <div class="pf-strat-card"><div class="pf-strat-icon">🤖</div><div class="pf-strat-name">Quant Signals</div><div class="pf-strat-desc">Composite-Z driven entries (already live).</div></div>
       </div>
     </div>
+
+    <!-- Pairs Trading Opportunities — pre-screened curated list with corr/z/signal. -->
+    <div class="pf-card" id="pf-popp-card">
+      <div class="pf-card-header">
+        <div class="pf-card-title">Pairs Trading Opportunities</div>
+        <span class="pf-badge pf-badge-b">COINTEGRATION SCREEN</span>
+      </div>
+      <div class="pf-popp-body">
+        <div class="pf-popp-intro">Statistical arbitrage — long the undervalued name, short the overvalued one in a correlated pair. Profit when the spread reverts.</div>
+        <div class="pf-popp-actions">
+          <button id="pf-popp-refresh" class="pill" type="button">↻ Refresh stats</button>
+          <button id="pf-popp-ai" class="pill cta" type="button">🧠 Get Quant's read on all pairs</button>
+          <span class="pf-popp-hint" id="pf-popp-hint">AI commentary uses ~1 cheap Haiku call total.</span>
+        </div>
+        <div class="pf-popp-list" id="pf-popp-list">
+          <div class="pf-popp-empty">Loading curated pairs…</div>
+        </div>
+      </div>
+    </div>
+
     <div class="pf-card" id="pf-pairs-card">
       <div class="pf-card-header">
         <div class="pf-card-title">Pairs Trading</div>
@@ -508,6 +528,6 @@
 
 <!-- Order matters: config first (sets API_BASE), then app reads window.QD_CONFIG -->
 <script src="config.js"></script>
-<script src="app.js?v=29"></script>
+<script src="app.js?v=30"></script>
 </body>
 </html>

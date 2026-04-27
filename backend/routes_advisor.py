@@ -430,3 +430,110 @@ def explain_pairs(body: PairsExplainIn, request: Request, response: Response) ->
     answer = "".join(text_parts).strip() or "(no response)"
 
     return {"model": model, "answer": answer}
+
+
+# ---- pairs opportunities batch explainer --------------------------------
+# One LLM call covers N pairs at once. Costs ~1 Haiku call regardless of
+# pair count, instead of N separate calls. JSON in / JSON out so the
+# frontend can render each note next to its row.
+
+class PairOpportunityIn(BaseModel):
+    a: str = Field(..., max_length=10)
+    b: str = Field(..., max_length=10)
+    correlation: Optional[float] = None
+    hedge_ratio_beta: Optional[float] = None
+    current_z: float
+    signal: str = Field(..., max_length=64)
+
+
+class PairsBatchIn(BaseModel):
+    pairs: list[PairOpportunityIn] = Field(..., min_length=1, max_length=12)
+    model: Optional[str] = None
+
+
+_PAIRS_BATCH_SYSTEM = """You are Quant, the in-app trading copilot.
+The user is looking at a list of pre-screened correlated stock pairs.
+For each pair, give ONE short sentence (max ~20 words) that combines
+the statistical setup (z-score, correlation) with a plain-English read
+on the pair (sector relationship, any obvious recent catalyst, whether
+the spread divergence makes sense or looks tradeable).
+
+Rules:
+- Output ONLY a JSON object: {"notes": {"NVDA/AMD": "...", "AAPL/MSFT": "...", ...}}
+- Keys MUST exactly match "TICKER_A/TICKER_B" as given to you.
+- One sentence per pair. No markdown, no emoji, no disclaimers.
+- Be direct and specific. "Strong long-AMD setup, two names track GPU demand together"
+  is good. "It depends" is bad.
+- If you genuinely don't recognize a pair, say "Stats setup is X, no specific catalyst I'm aware of."
+"""
+
+
+@router.post("/explain_pairs_batch")
+def explain_pairs_batch(body: PairsBatchIn, request: Request, response: Response) -> dict:
+    uid = _require_user(request)
+    response.headers["Cache-Control"] = "no-store"
+
+    model = body.model or _DEFAULT_MODEL
+    if model not in _ALLOWED_MODELS:
+        raise HTTPException(status_code=400, detail=f"Unsupported model. Allowed: {sorted(_ALLOWED_MODELS)}")
+
+    _check_rate_limit(uid)
+
+    api_key = secrets_db.get_user_key(uid, _PROVIDER)
+    if not api_key:
+        raise HTTPException(status_code=412, detail="No Anthropic key on file. Add one in Account → API Keys.")
+
+    # Build the user prompt as a compact list.
+    lines = ["Here are the pairs to comment on:"]
+    for p in body.pairs:
+        a = p.a.upper().strip()
+        b = p.b.upper().strip()
+        corr = f"{p.correlation:.2f}" if p.correlation is not None else "n/a"
+        beta = f"{p.hedge_ratio_beta:.2f}" if p.hedge_ratio_beta is not None else "n/a"
+        lines.append(
+            f"- {a}/{b}: corr={corr}, hedge_ratio_beta={beta}, "
+            f"current_z={p.current_z:.2f}, signal={p.signal}"
+        )
+    lines.append("\nReturn the JSON object now.")
+    user_msg = "\n".join(lines)
+
+    try:
+        import anthropic
+        client = anthropic.Anthropic(api_key=api_key)
+        result = client.messages.create(
+            model=model,
+            max_tokens=900,  # ~12 pairs * ~25 tokens each + JSON overhead
+            system=_PAIRS_BATCH_SYSTEM,
+            messages=[{"role": "user", "content": user_msg}],
+        )
+    except Exception as exc:
+        msg = str(exc)
+        if "401" in msg or "authentication" in msg.lower():
+            raise HTTPException(status_code=401, detail="Anthropic rejected the stored key. Update it in Account → API Keys.")
+        if "429" in msg or "rate" in msg.lower():
+            raise HTTPException(status_code=429, detail="Anthropic rate limit on your account. Try again shortly.")
+        raise HTTPException(status_code=502, detail="Anthropic call failed. Try again in a moment.")
+    finally:
+        api_key = None
+
+    raw = "".join(getattr(b, "text", "") or "" for b in (result.content or [])).strip()
+
+    # Parse the JSON object — be lenient if the model wraps it in a code
+    # fence or adds chatter before/after. Find the outermost {...}.
+    import json, re
+    notes: dict[str, str] = {}
+    try:
+        # Strip code fences if any.
+        cleaned = re.sub(r"^```(?:json)?\s*|\s*```$", "", raw, flags=re.MULTILINE).strip()
+        # Grab the first {...} block.
+        m = re.search(r"\{.*\}", cleaned, re.DOTALL)
+        if m:
+            payload = json.loads(m.group(0))
+            raw_notes = payload.get("notes") or {}
+            if isinstance(raw_notes, dict):
+                # Coerce values to str and trim length defensively.
+                notes = {str(k): str(v)[:400] for k, v in raw_notes.items()}
+    except Exception:
+        notes = {}
+
+    return {"model": model, "notes": notes, "raw": raw if not notes else None}

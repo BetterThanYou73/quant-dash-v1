@@ -1758,6 +1758,9 @@ async function _renderPortfolio() {
   // Pairs Trading card — wires inputs once, pre-fills from holdings.
   _wirePortfolioPairs(positions);
 
+  // Pairs Opportunities — curated pre-screen, AI commentary on demand.
+  _renderPairsOpportunities();
+
   // Auto-hydrate any positions that are missing prices (rows showing "\u2014").
   // Only triggers once per render cycle; the refresh endpoint will retry
   // foreign tickers via .TO/.V fallback. Re-renders when done.
@@ -2103,6 +2106,166 @@ function _setPairsStatus(el, text, kind) {
   if (!el) return;
   el.textContent = text || "";
   el.className = "pf-pairs-stats" + (kind ? " " + kind : "");
+}
+
+// ---------- Pairs Opportunities (curated pre-screen) -------------------
+// Renders /api/pairs/opportunities into a table. AI commentary is fetched
+// only when the user clicks "Get Quant's read" — protects their token spend.
+
+const _POPP_NICKNAMES = {
+  NVDA: "NVIDIA", AMD: "AMD", AAPL: "Apple", MSFT: "Microsoft",
+  META: "Meta", GOOGL: "Alphabet", XOM: "Exxon", CVX: "Chevron",
+  KO: "Coca-Cola", PEP: "PepsiCo", V: "Visa", MA: "Mastercard",
+  JPM: "JPMorgan", BAC: "Bank of America", HD: "Home Depot", LOW: "Lowe's",
+  SNAP: "Snap", TSLA: "Tesla", F: "Ford", GM: "GM",
+};
+
+let _POPP_LAST_DATA = null;  // cached so the AI button can reuse the rows
+
+async function _renderPairsOpportunities() {
+  const card = document.getElementById("pf-popp-card");
+  if (!card) return;
+  const listEl = document.getElementById("pf-popp-list");
+  const refreshBtn = document.getElementById("pf-popp-refresh");
+  const aiBtn = document.getElementById("pf-popp-ai");
+
+  // Wire actions once.
+  if (refreshBtn && !refreshBtn.dataset.wired) {
+    refreshBtn.dataset.wired = "1";
+    refreshBtn.addEventListener("click", () => _loadPairsOpportunities());
+  }
+  if (aiBtn && !aiBtn.dataset.wired) {
+    aiBtn.dataset.wired = "1";
+    aiBtn.addEventListener("click", () => _runPairsOpportunitiesAI());
+  }
+
+  await _loadPairsOpportunities();
+}
+
+async function _loadPairsOpportunities() {
+  const listEl = document.getElementById("pf-popp-list");
+  const aiBtn = document.getElementById("pf-popp-ai");
+  if (!listEl) return;
+  listEl.innerHTML = `<div class="pf-popp-empty">Loading curated pairs\u2026</div>`;
+  if (aiBtn) aiBtn.disabled = true;
+
+  try {
+    const data = await apiGet("/api/pairs/opportunities");
+    _POPP_LAST_DATA = data;
+    _renderPairsOpportunitiesRows(data, /*notes*/ null);
+    if (aiBtn) aiBtn.disabled = !(data.pairs && data.pairs.length);
+  } catch (e) {
+    listEl.innerHTML = `<div class="pf-popp-empty">Couldn't load pairs: ${(e.message || "request failed")}</div>`;
+    if (aiBtn) aiBtn.disabled = true;
+  }
+}
+
+function _renderPairsOpportunitiesRows(data, notes) {
+  const listEl = document.getElementById("pf-popp-list");
+  if (!listEl) return;
+  const pairs = (data && data.pairs) || [];
+  if (!pairs.length) {
+    listEl.innerHTML = `<div class="pf-popp-empty">No pairs available right now.</div>`;
+    return;
+  }
+  notes = notes || {};
+  const rows = pairs.map(p => {
+    const key = `${p.a}/${p.b}`;
+    const corr = p.correlation;
+    const corrCls = corr >= 0.85 ? "corr-hi" : corr >= 0.70 ? "corr-md" : "corr-lo";
+    const z = p.current_z || 0;
+    const sig = p.signal || "—";
+    const sigU = sig.toUpperCase();
+    const sigLines = _formatPairSignal(sigU, p.a, p.b);
+    const note = notes[key];
+    const noteHtml = note
+      ? `<div class="pf-popp-note">${_escapeHtml(note)}</div>`
+      : (notes && Object.keys(notes).length
+          ? `<div class="pf-popp-note muted">No commentary returned for this pair.</div>`
+          : "");
+    return `
+      <div class="pf-popp-row" data-pair="${key}">
+        <div class="pf-popp-tk">
+          <span class="pf-popp-tk-sym">${p.a}</span>
+          <span class="pf-popp-tk-sub">${_POPP_NICKNAMES[p.a] || p.a}</span>
+        </div>
+        <div class="pf-popp-vs">vs</div>
+        <div class="pf-popp-tk">
+          <span class="pf-popp-tk-sym">${p.b}</span>
+          <span class="pf-popp-tk-sub">${_POPP_NICKNAMES[p.b] || p.b}</span>
+        </div>
+        <div>
+          <span class="pf-popp-stat-label">Correlation</span>
+          <div class="pf-popp-stat"><span class="${corrCls}">${(corr ?? 0).toFixed(2)}</span></div>
+        </div>
+        <div class="pf-popp-sig">
+          ${sigLines}
+          <span class="pf-popp-sig-spread">Spread: ${z >= 0 ? "+" : ""}${z.toFixed(2)}\u03c3</span>
+        </div>
+        ${noteHtml}
+      </div>`;
+  }).join("");
+  listEl.innerHTML = rows;
+}
+
+function _formatPairSignal(sigU, a, b) {
+  // Map engine signals to two-line "▲ LONG X / ▼ SHORT Y" blocks.
+  if (sigU.includes("LONG A") || sigU.includes("LONG_A") || sigU === "LONG A / SHORT B") {
+    return `<span class="pf-popp-sig-line green">\u25b2 LONG ${a}</span><span class="pf-popp-sig-line red">\u25bc SHORT ${b}</span>`;
+  }
+  if (sigU.includes("SHORT A") || sigU.includes("SHORT_A") || sigU === "SHORT A / LONG B") {
+    return `<span class="pf-popp-sig-line red">\u25bc SHORT ${a}</span><span class="pf-popp-sig-line green">\u25b2 LONG ${b}</span>`;
+  }
+  if (sigU === "EXIT" || sigU.includes("CLOSE")) {
+    return `<span class="pf-popp-sig-line amber">\u25cf EXIT</span>`;
+  }
+  return `<span class="pf-popp-sig-line">\u25cf ${sigU || "NO TRADE"}</span>`;
+}
+
+async function _runPairsOpportunitiesAI() {
+  const aiBtn = document.getElementById("pf-popp-ai");
+  const hint = document.getElementById("pf-popp-hint");
+  if (!_POPP_LAST_DATA || !_POPP_LAST_DATA.pairs?.length) return;
+
+  const origText = aiBtn.textContent;
+  aiBtn.disabled = true;
+  aiBtn.textContent = "🧠 Quant is thinking…";
+  if (hint) hint.textContent = "1 Haiku call in flight…";
+
+  try {
+    const payload = {
+      pairs: _POPP_LAST_DATA.pairs.map(p => ({
+        a: p.a, b: p.b,
+        correlation: p.correlation,
+        hedge_ratio_beta: p.hedge_ratio_beta,
+        current_z: p.current_z,
+        signal: p.signal,
+      })),
+    };
+    const res = await apiPost("/api/advisor/explain_pairs_batch", payload);
+    _renderPairsOpportunitiesRows(_POPP_LAST_DATA, res.notes || {});
+    if (hint) hint.textContent = `Notes attached \u00b7 model: ${res.model || "haiku"}.`;
+  } catch (e) {
+    const msg = (e && e.message) || "request failed";
+    if (hint) {
+      if (msg.includes("412")) {
+        hint.innerHTML = "Add an Anthropic key in <strong>Account \u2192 API Keys</strong> first.";
+      } else if (msg.includes("401")) {
+        hint.textContent = "Sign in to use Quant.";
+      } else {
+        hint.textContent = "Quant call failed: " + msg;
+      }
+    }
+  } finally {
+    aiBtn.disabled = false;
+    aiBtn.textContent = origText;
+  }
+}
+
+function _escapeHtml(s) {
+  return String(s).replace(/[&<>"']/g, c => (
+    { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]
+  ));
 }
 
 async function _renderPortfolioPerf() {

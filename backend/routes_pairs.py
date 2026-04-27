@@ -87,3 +87,81 @@ def get_pair(
         "spread_std": clean_for_json(float(spread.std())),
         "series": points,
     }
+
+
+# Curated universe of pairs traders actually watch. Kept short so the
+# opportunities scan stays under ~100ms and the AI batch call stays cheap.
+# Ordering = display order on the card.
+_CURATED_PAIRS: list[tuple[str, str]] = [
+    ("NVDA", "AMD"),
+    ("AAPL", "MSFT"),
+    ("META", "GOOGL"),
+    ("XOM",  "CVX"),
+    ("KO",   "PEP"),
+    ("V",    "MA"),
+    ("JPM",  "BAC"),
+    ("HD",   "LOW"),
+]
+
+
+@router.get("/pairs/opportunities")
+def get_pair_opportunities(
+    lookback: int = Query(252, ge=63, le=504),
+    z_window: int = Query(30, ge=10, le=120),
+    entry: float = Query(2.0, ge=1.0, le=4.0),
+    exit_: float = Query(0.5, ge=0.1, le=2.0, alias="exit"),
+):
+    """Scan a curated list of correlated pairs and return their current
+    correlation, hedge ratio, z-score, and signal. Pure stats — no LLM
+    call here. The frontend can hit /api/advisor/explain_pairs_batch
+    afterwards to attach AI commentary on user demand.
+    """
+    # One bulk price load instead of N — load_close_prices reuses the
+    # snapshot frame, so this is a single column-slice operation.
+    tickers = sorted({t for pair in _CURATED_PAIRS for t in pair})
+    close = load_close_prices(tickers, lookback)
+
+    rows = []
+    for a, b in _CURATED_PAIRS:
+        if a not in close.columns or b not in close.columns:
+            continue
+        sa = close[a].dropna()
+        sb = close[b].dropna()
+        # Align on shared dates so the corr/regression numbers are honest.
+        joined = sa.to_frame("a").join(sb.to_frame("b"), how="inner").dropna()
+        if len(joined) < z_window + 5:
+            continue
+
+        sa2, sb2 = joined["a"], joined["b"]
+        try:
+            corr = float(sa2.pct_change().corr(sb2.pct_change()))
+            beta = metrics.calculate_hedge_ratio(sa2, sb2)
+            spread = metrics.calculate_spread(sa2, sb2, beta)
+            z_series = metrics.rolling_zscore(spread, window=z_window).dropna()
+            if z_series.empty:
+                continue
+            cz = float(z_series.iloc[-1])
+            signal = metrics.pair_signal(cz, entry_threshold=entry, exit_threshold=exit_)
+        except Exception:
+            continue
+
+        rows.append({
+            "a": a,
+            "b": b,
+            "correlation": clean_for_json(corr),
+            "hedge_ratio_beta": clean_for_json(beta) if np.isfinite(beta) else None,
+            "current_z": clean_for_json(cz),
+            "signal": signal,
+        })
+
+    # Most-actionable first: largest |z|, then highest correlation.
+    rows.sort(key=lambda r: (-abs(r.get("current_z") or 0.0), -(r.get("correlation") or 0.0)))
+
+    return {
+        "lookback_days": lookback,
+        "z_window": z_window,
+        "entry_threshold": entry,
+        "exit_threshold": exit_,
+        "count": len(rows),
+        "pairs": rows,
+    }
