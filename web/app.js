@@ -1741,9 +1741,12 @@ async function _renderPortfolio() {
     });
   });
 
-  // Performance chart \u2014 fetched separately so a slow history call doesn't
+  // Performance chart — fetched separately so a slow history call doesn't
   // block the rest of the page from rendering.
   _renderPortfolioPerf().catch(() => { /* errors shown inline */ });
+
+  // Advisor card — independent fetch so it doesn't block holdings.
+  _renderAdvisor().catch(() => { /* status updates inline */ });
 
   // Auto-hydrate any positions that are missing prices (rows showing "\u2014").
   // Only triggers once per render cycle; the refresh endpoint will retry
@@ -1760,6 +1763,99 @@ async function _renderPortfolio() {
 // Active period for the equity curve. Persisted in-module so re-renders
 // (after add/sell) keep the user's selection.
 let _PF_PERF_PERIOD = "1y";
+
+// ---------- Advisor ----------------------------------------------------
+// BYOK Anthropic chat. Fetches /api/advisor/key to decide whether to show
+// the gate (no key) or the chat (key on file). Send button POSTs the user's
+// message to /api/advisor/chat with the selected model.
+
+async function _renderAdvisor() {
+  const card    = document.getElementById("pf-advisor-card");
+  const gate    = document.getElementById("adv-gate");
+  const chat    = document.getElementById("adv-chat");
+  const status  = document.getElementById("adv-status");
+  const gateBtn = document.getElementById("adv-gate-btn");
+  if (!card || !status) return;
+
+  // Anonymous device users can't BYOK — they need to sign in first.
+  if (!Auth.user()) {
+    gate.hidden = false; chat.hidden = true;
+    status.textContent = "SIGN IN";
+    status.className = "pf-badge pf-badge-o";
+    gate.querySelector(".adv-gate-text").innerHTML =
+      "<strong>Sign in to use the AI Advisor.</strong> Bring-your-own-key (Anthropic) " +
+      "lets you chat with Claude about your portfolio. Your key stays encrypted on our server.";
+    gateBtn.textContent = "Sign in";
+    gateBtn.onclick = () => Auth.open("login");
+    return;
+  }
+
+  let s;
+  try { s = await apiGet("/api/advisor/key"); }
+  catch { status.textContent = "OFFLINE"; status.className = "pf-badge pf-badge-o"; return; }
+
+  if (!s.has_key) {
+    gate.hidden = false; chat.hidden = true;
+    status.textContent = "NO KEY";
+    status.className = "pf-badge pf-badge-o";
+    gateBtn.textContent = "Add API Key";
+    gateBtn.onclick = () => Auth.openAccount();
+    return;
+  }
+
+  gate.hidden = true; chat.hidden = false;
+  status.textContent = "READY";
+  status.className = "pf-badge pf-badge-g";
+  _wireAdvChat();
+}
+
+function _wireAdvChat() {
+  const log    = document.getElementById("adv-log");
+  const input  = document.getElementById("adv-input");
+  const send   = document.getElementById("adv-send");
+  const model  = document.getElementById("adv-model");
+  if (!log || send.dataset.wired) return;
+  send.dataset.wired = "1";
+
+  function appendMsg(role, text) {
+    const div = document.createElement("div");
+    div.className = "adv-msg adv-msg-" + role;
+    div.innerHTML = `<div class="adv-role">${role === "user" ? "You" : "Advisor"}</div>` +
+                    `<div class="adv-text"></div>`;
+    div.querySelector(".adv-text").textContent = text;
+    log.appendChild(div);
+    log.scrollTop = log.scrollHeight;
+    return div.querySelector(".adv-text");
+  }
+
+  async function submit() {
+    const msg = input.value.trim();
+    if (!msg) return;
+    input.value = "";
+    appendMsg("user", msg);
+    const placeholder = appendMsg("bot", "Thinking…");
+    send.disabled = true;
+    try {
+      const r = await apiPost("/api/advisor/chat", {
+        message: msg,
+        model: model.value,
+        include_portfolio: true,
+      });
+      placeholder.textContent = r.answer || "(no response)";
+    } catch (e) {
+      placeholder.textContent = "Error: " + (e.message || "unknown");
+      placeholder.parentElement.classList.add("err");
+    } finally {
+      send.disabled = false;
+      input.focus();
+    }
+  }
+
+  send.addEventListener("click", submit);
+  input.addEventListener("keydown", (e) => {
+    if (e.key === "Enter" && (e.ctrlKey || e.metaKey)) submit();
+  });
+}
 
 async function _renderPortfolioPerf() {
   const canvas = document.getElementById("pf-perf-chart");
@@ -2264,8 +2360,16 @@ const Auth = (() => {
           <div class="acct-row acct-muted"><span>Daily portfolio digest, signal alerts, drawdown warnings.</span></div>
         </div>
         <div class="acct-section">
-          <div class="acct-section-title">API Keys <span class="acct-soon">soon</span></div>
-          <div class="acct-row acct-muted"><span>Issue read-only tokens for programmatic access to your portfolio analytics.</span></div>
+          <div class="acct-section-title">API Keys <span class="acct-soon">Anthropic</span></div>
+          <div class="acct-row acct-muted"><span>Bring your own Anthropic key to power the AI Advisor. The key is encrypted at rest and never sent back to your browser.</span></div>
+          <div id="acct-key-status" class="acct-row acct-muted"><span>Loading…</span></div>
+          <div class="acct-key-form">
+            <input id="acct-key-input" class="field" type="password" placeholder="sk-ant-..." autocomplete="off" spellcheck="false">
+            <button id="acct-key-save" class="pill cta">Save</button>
+            <button id="acct-key-clear" class="pill" hidden>Remove</button>
+          </div>
+          <div id="acct-key-msg" class="acct-key-msg"></div>
+          <div class="acct-row acct-muted" style="margin-top:6px"><span>Get a key from <a href="https://console.anthropic.com/settings/keys" target="_blank" rel="noopener">console.anthropic.com</a>. Set a monthly spend cap there too.</span></div>
         </div>
         <div class="acct-actions">
           <button class="pill" data-close>Close</button>
@@ -2277,6 +2381,72 @@ const Auth = (() => {
       Modal.close();
       await logout();
     });
+    _wireAcctKey();
+  }
+
+  async function _wireAcctKey() {
+    const statusEl = document.getElementById("acct-key-status");
+    const inputEl  = document.getElementById("acct-key-input");
+    const saveBtn  = document.getElementById("acct-key-save");
+    const clearBtn = document.getElementById("acct-key-clear");
+    const msgEl    = document.getElementById("acct-key-msg");
+    if (!statusEl) return;
+
+    function flash(text, kind) {
+      msgEl.textContent = text || "";
+      msgEl.className = "acct-key-msg" + (kind ? " " + kind : "");
+    }
+
+    async function refresh() {
+      try {
+        const s = await apiGet("/api/advisor/key");
+        if (s.has_key) {
+          const when = s.updated_utc ? s.updated_utc.replace("T", " ").slice(0, 16) + " UTC" : "";
+          statusEl.innerHTML = `<span>Key on file ending in <strong>…${s.last4}</strong>${when ? " · updated " + when : ""}.</span>`;
+          clearBtn.hidden = false;
+          inputEl.placeholder = "sk-ant-… (replace existing)";
+        } else {
+          statusEl.innerHTML = `<span>No key on file. Add one to enable the AI Advisor.</span>`;
+          clearBtn.hidden = true;
+          inputEl.placeholder = "sk-ant-...";
+        }
+      } catch (e) {
+        statusEl.innerHTML = `<span class="err">Couldn't load key status: ${e.message}</span>`;
+      }
+    }
+
+    saveBtn.addEventListener("click", async () => {
+      const v = inputEl.value.trim();
+      if (!v) { flash("Paste a key first.", "err"); return; }
+      saveBtn.disabled = true; flash("Verifying with Anthropic…");
+      try {
+        await apiPut("/api/advisor/key", { api_key: v });
+        inputEl.value = "";
+        flash("Key saved and verified.", "ok");
+        await refresh();
+      } catch (e) {
+        flash(e.message || "Save failed.", "err");
+      } finally {
+        saveBtn.disabled = false;
+      }
+    });
+
+    clearBtn.addEventListener("click", async () => {
+      if (!confirm("Remove your Anthropic key? The Advisor will stop working until you add a new one.")) return;
+      clearBtn.disabled = true;
+      try {
+        await apiDelete("/api/advisor/key");
+        flash("Key removed.", "ok");
+        await refresh();
+      } catch (e) {
+        flash(e.message || "Delete failed.", "err");
+      } finally {
+        clearBtn.disabled = false;
+      }
+    });
+
+    inputEl.addEventListener("keydown", (e) => { if (e.key === "Enter") saveBtn.click(); });
+    refresh();
   }
 
   function bind() {

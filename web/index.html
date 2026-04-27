@@ -5,7 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>QuantDash — Quantitative Dashboard</title>
 <link href="https://fonts.googleapis.com/css2?family=Space+Mono:ital,wght@0,400;0,700;1,400&family=Syne:wght@400;600;700;800&display=swap" rel="stylesheet">
-<link rel="stylesheet" href="styles.css?v=24">
+<link rel="stylesheet" href="styles.css?v=25">
 </head>
 <body>
 
@@ -381,20 +381,39 @@
     </div>
   </div>
 
-  <!-- Row 3 — Advisor chat stub (Phase 2c). Visual placeholder so the layout reads
-       intentionally; actual /api/advisor wiring lands in the next phase. -->
-  <div class="pf-card pf-stub">
+  <!-- Row 3 — AI Advisor (Phase 2c). BYOK Anthropic. Hidden by default; revealed
+       once /api/advisor/key reports has_key=true (or always for signed-in users). -->
+  <div class="pf-card" id="pf-advisor-card">
     <div class="pf-card-header">
       <div class="pf-card-title">AI Investment Advisor</div>
-      <span class="pf-badge pf-badge-o">PHASE 2C — NEXT UP</span>
+      <div class="adv-controls">
+        <select id="adv-model" class="field adv-model" title="Model">
+          <option value="claude-haiku-4-5" selected>Haiku — fast & cheap</option>
+          <option value="claude-sonnet-4-5">Sonnet — deep analysis</option>
+        </select>
+        <span class="pf-badge pf-badge-b" id="adv-status">CHECKING…</span>
+      </div>
     </div>
-    <div class="pf-stub-body">
-      <div class="pf-stub-icon">🤖</div>
-      <div class="pf-stub-text">
-        <strong>Coming next:</strong> a Claude-powered chat that has full visibility
-        into your portfolio. Ask things like <em>"should I trim TSLA?"</em> or
-        <em>"rebalance for moderate risk"</em> and it will answer using your real
-        positions, factor scores, and sector exposure as ground truth.
+    <div class="adv-body">
+      <div id="adv-gate" class="adv-gate" hidden>
+        <div class="adv-gate-icon">🔐</div>
+        <div class="adv-gate-text">
+          <strong>Bring your own Anthropic key.</strong> Your key is encrypted at rest
+          and only used to call Claude on your behalf — we never see your prompts'
+          contents on disk and you control your own spend on
+          <a href="https://console.anthropic.com/settings/billing" target="_blank" rel="noopener">console.anthropic.com</a>.
+        </div>
+        <button id="adv-gate-btn" class="pill cta">Add API Key</button>
+      </div>
+      <div id="adv-chat" class="adv-chat" hidden>
+        <div id="adv-log" class="adv-log"></div>
+        <div class="adv-input-row">
+          <textarea id="adv-input" class="field adv-input" rows="2" placeholder="Ask about your portfolio… e.g. 'should I trim TSLA?' or 'rebalance for moderate risk'"></textarea>
+          <button id="adv-send" class="pill cta">Send</button>
+        </div>
+        <div class="adv-foot">
+          Educational analysis only. Not personal financial advice. Each call uses your Anthropic credits.
+        </div>
       </div>
     </div>
   </div>
@@ -474,6 +493,6 @@
 
 <!-- Order matters: config first (sets API_BASE), then app reads window.QD_CONFIG -->
 <script src="config.js"></script>
-<script src="app.js?v=24"></script>
+<script src="app.js?v=25"></script>
 </body>
 </html>

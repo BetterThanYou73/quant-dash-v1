@@ -1,0 +1,274 @@
+"""
+Advisor routes — /api/advisor/*.
+
+Bring-your-own-key (BYOK) Anthropic Claude integration. Each user supplies
+their own Anthropic API key; we never share a pool. This eliminates the
+runaway-cost risk for the operator and keeps Anthropic's billing/abuse
+controls scoped to the actual end user.
+
+Endpoints:
+    GET    /api/advisor/key         -> { has_key, last4, updated_utc }
+    PUT    /api/advisor/key         -> store/replace key (validated by a 1-token ping)
+    DELETE /api/advisor/key         -> erase key
+    POST   /api/advisor/chat        -> single-turn chat with portfolio context
+
+All endpoints require an authenticated session (qd_session JWT). Anonymous
+device users cannot configure or use the Advisor — by design, since the key
+is tied to a real account.
+
+Security posture:
+    - Plaintext key NEVER leaves /api/advisor/key (PUT request body is
+      the only place it appears in flight, over TLS).
+    - Plaintext key NEVER appears in our logs (no f-string interpolation
+      of the key, no error messages echoing it).
+    - Key is encrypted at rest via core.secrets_db (Fernet symmetric).
+    - Per-user rate limit (sliding window) caps message floods and
+      protects the user's own Anthropic spend if their session is stolen.
+
+Cost model (so the user can self-budget):
+    - Default model: claude-3-5-haiku-latest (cheap, fast).
+    - Optional: claude-sonnet-4-5 for deep analysis (10x cost).
+    - Each chat call sends a small system prompt + their last message
+      + a compact portfolio summary (~500 tokens in / ~600 tokens out
+      typical), so order-of-magnitude $0.001 per Haiku call.
+"""
+
+from __future__ import annotations
+
+import threading
+import time
+from typing import Optional
+
+from fastapi import APIRouter, HTTPException, Request, Response
+from pydantic import BaseModel, Field
+
+from core import secrets_db
+from core import portfolio_db as pdb
+from backend.routes_auth import get_current_user_id
+from backend import routes_portfolio as pf_routes
+
+
+router = APIRouter(prefix="/api/advisor", tags=["advisor"])
+
+
+_PROVIDER = "anthropic"
+
+# Allow-list of model IDs the user can request. We don't pass arbitrary
+# strings to the SDK — that would let a user point at an experimental
+# model with surprise pricing.
+_ALLOWED_MODELS = {
+    "claude-haiku-4-5": "fast",
+    "claude-sonnet-4-5": "deep",
+}
+_DEFAULT_MODEL = "claude-haiku-4-5"
+
+# Per-user rate limit. Sliding window kept in process memory; on Heroku
+# Basic with 1 worker that's effectively global. If we add workers later
+# we'll move this to Postgres or Redis.
+_RATE_LIMIT_MAX = 30          # messages
+_RATE_LIMIT_WINDOW = 3600.0   # per hour
+_rate_lock = threading.Lock()
+_rate_log: dict[int, list[float]] = {}
+
+
+def _check_rate_limit(user_id: int) -> None:
+    now = time.time()
+    with _rate_lock:
+        bucket = _rate_log.setdefault(user_id, [])
+        # prune
+        cutoff = now - _RATE_LIMIT_WINDOW
+        while bucket and bucket[0] < cutoff:
+            bucket.pop(0)
+        if len(bucket) >= _RATE_LIMIT_MAX:
+            retry_in = int(bucket[0] + _RATE_LIMIT_WINDOW - now)
+            raise HTTPException(
+                status_code=429,
+                detail=f"Rate limit reached ({_RATE_LIMIT_MAX}/hr). Try again in {retry_in}s.",
+            )
+        bucket.append(now)
+
+
+def _require_user(request: Request) -> int:
+    uid = get_current_user_id(request)
+    if uid is None:
+        raise HTTPException(status_code=401, detail="Sign in to use the Advisor.")
+    return uid
+
+
+# ---- key management ------------------------------------------------------
+
+class KeyIn(BaseModel):
+    api_key: str = Field(..., min_length=10, max_length=512)
+
+
+@router.get("/key")
+def get_key_status(request: Request, response: Response) -> dict:
+    uid = _require_user(request)
+    response.headers["Cache-Control"] = "no-store"
+    return secrets_db.get_user_key_status(uid, _PROVIDER)
+
+
+@router.put("/key")
+def set_key(body: KeyIn, request: Request, response: Response) -> dict:
+    """Validate the key with a tiny round-trip to Anthropic, then store
+    it encrypted. We do NOT store an unverified key — the user gets an
+    immediate 'this key works' confirmation."""
+    uid = _require_user(request)
+    response.headers["Cache-Control"] = "no-store"
+
+    raw = body.api_key.strip()
+    # Anthropic keys begin with "sk-ant-". This is a sanity check, not
+    # security — we still verify by calling the API below.
+    if not raw.startswith("sk-ant-"):
+        raise HTTPException(status_code=400, detail="That doesn't look like an Anthropic key (expected sk-ant-...).")
+
+    # Validate by issuing the cheapest possible call: 1 token output on Haiku.
+    try:
+        import anthropic
+        client = anthropic.Anthropic(api_key=raw)
+        client.messages.create(
+            model=_DEFAULT_MODEL,
+            max_tokens=1,
+            messages=[{"role": "user", "content": "ping"}],
+        )
+    except Exception as exc:
+        # Map Anthropic SDK errors to a clean 400 without leaking the key
+        # or stack details. The error message from anthropic.AuthenticationError
+        # is short and safe ("invalid x-api-key"); other exceptions get
+        # genericized.
+        msg = str(exc)
+        if "401" in msg or "authentication" in msg.lower() or "invalid" in msg.lower():
+            raise HTTPException(status_code=400, detail="Anthropic rejected this key. Double-check it on console.anthropic.com.")
+        raise HTTPException(status_code=502, detail="Couldn't reach Anthropic to verify the key. Try again in a moment.")
+
+    return secrets_db.set_user_key(uid, _PROVIDER, raw)
+
+
+@router.delete("/key")
+def delete_key(request: Request, response: Response) -> dict:
+    uid = _require_user(request)
+    response.headers["Cache-Control"] = "no-store"
+    deleted = secrets_db.delete_user_key(uid, _PROVIDER)
+    return {"deleted": deleted}
+
+
+# ---- chat ----------------------------------------------------------------
+
+class ChatIn(BaseModel):
+    message: str = Field(..., min_length=1, max_length=2000)
+    model: Optional[str] = Field(None, description="claude-haiku-4-5 (fast) or claude-sonnet-4-5 (deep)")
+    include_portfolio: bool = Field(True, description="Attach a compact summary of the user's portfolio to the system prompt.")
+
+
+_SYSTEM_PROMPT = """You are an embedded portfolio analyst inside Quant Dash, a quantitative dashboard.
+You help the user understand their holdings, factor exposures, and the screener results.
+
+Style:
+- Be concise. 2-6 short paragraphs unless asked for depth.
+- Plain text only — no Markdown headings, no emoji, no tables.
+- When asked for opinions on individual tickers, ground them in the factor scores
+  (Composite Z, Beta, Sortino, Momentum) the dashboard already computed.
+- You are NOT a registered advisor; if asked for personal financial advice,
+  remind the user briefly and continue with educational analysis.
+- Never invent prices, ratios, or news. If you don't have a number from the
+  context provided, say so."""
+
+
+def _portfolio_context(user_id: int) -> str:
+    """Render a compact text blob of the user's holdings + analytics for
+    the Advisor. Truncated to keep token cost predictable."""
+    try:
+        positions = pdb.list_positions("user", str(user_id))
+        if not positions:
+            return "User has no holdings yet."
+        analytics = pf_routes._compute_analytics(positions)
+    except Exception:
+        return "Portfolio data unavailable right now."
+
+    t = analytics.get("totals", {}) or {}
+    rows = analytics.get("positions", []) or []
+    sectors = analytics.get("sector_exposure", []) or []
+
+    lines = []
+    lines.append(f"Portfolio totals: value=${t.get('value') or 0:.2f}, "
+                 f"unrealized P&L=${t.get('unrealized_pl') or 0:.2f} "
+                 f"({(t.get('unrealized_pl_pct') or 0) * 100:.1f}%), "
+                 f"day change=${t.get('day_change') or 0:.2f}, "
+                 f"weighted beta vs SPY={t.get('weighted_beta')}, "
+                 f"weighted composite Z={t.get('weighted_composite_z')}.")
+    lines.append("Holdings:")
+    for r in rows[:25]:  # cap to keep prompt small
+        lines.append(
+            f"  - {r.get('ticker')} ({r.get('sector') or 'Unknown'}): "
+            f"{r.get('shares')} sh @ avg ${r.get('avg_cost')}, "
+            f"price ${r.get('price')}, weight {(r.get('weight') or 0) * 100:.1f}%, "
+            f"signal={r.get('signal')}, beta={r.get('beta')}, z={r.get('composite_z')}."
+        )
+    if sectors:
+        lines.append("Sector exposure: " + ", ".join(
+            f"{s.get('sector')} {(s.get('weight') or 0) * 100:.0f}%" for s in sectors[:8]
+        ))
+    return "\n".join(lines)
+
+
+@router.post("/chat")
+def chat(body: ChatIn, request: Request, response: Response) -> dict:
+    uid = _require_user(request)
+    response.headers["Cache-Control"] = "no-store"
+
+    model = body.model or _DEFAULT_MODEL
+    if model not in _ALLOWED_MODELS:
+        raise HTTPException(status_code=400, detail=f"Unsupported model. Allowed: {sorted(_ALLOWED_MODELS)}")
+
+    _check_rate_limit(uid)
+
+    api_key = secrets_db.get_user_key(uid, _PROVIDER)
+    if not api_key:
+        raise HTTPException(status_code=412, detail="No Anthropic key on file. Add one in Account → API Keys.")
+
+    system = _SYSTEM_PROMPT
+    if body.include_portfolio:
+        system = system + "\n\nCurrent portfolio context:\n" + _portfolio_context(uid)
+
+    # Token caps — bound the user's per-call spend.
+    max_tokens = 1024 if model.startswith("claude-haiku") else 2048
+
+    try:
+        import anthropic
+        client = anthropic.Anthropic(api_key=api_key)
+        result = client.messages.create(
+            model=model,
+            max_tokens=max_tokens,
+            system=system,
+            messages=[{"role": "user", "content": body.message}],
+        )
+    except Exception as exc:
+        msg = str(exc)
+        if "401" in msg or "authentication" in msg.lower():
+            raise HTTPException(status_code=401, detail="Anthropic rejected the stored key. Update it in Account → API Keys.")
+        if "429" in msg or "rate" in msg.lower():
+            raise HTTPException(status_code=429, detail="Anthropic rate limit on your account. Try again shortly.")
+        raise HTTPException(status_code=502, detail="Anthropic call failed. Try again in a moment.")
+    finally:
+        # Defensive: drop the local reference so the plaintext doesn't
+        # linger in the frame longer than necessary.
+        api_key = None
+
+    # Anthropic SDK returns content as a list of TextBlock objects.
+    text_parts = []
+    for block in (result.content or []):
+        text = getattr(block, "text", None)
+        if text:
+            text_parts.append(text)
+    answer = "".join(text_parts).strip() or "(no response)"
+
+    usage = getattr(result, "usage", None)
+    return {
+        "model": model,
+        "answer": answer,
+        "usage": {
+            "input_tokens": getattr(usage, "input_tokens", None) if usage else None,
+            "output_tokens": getattr(usage, "output_tokens", None) if usage else None,
+        },
+        "stop_reason": getattr(result, "stop_reason", None),
+    }

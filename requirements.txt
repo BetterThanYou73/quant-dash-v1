@@ -13,4 +13,8 @@ psycopg[binary]
 # Auth (Phase 2b)
 bcrypt
 PyJWT
+# Advisor (Phase 2c) — Anthropic SDK + Fernet symmetric encryption
+# for at-rest BYOK storage in Postgres.
+anthropic
+cryptography
 
