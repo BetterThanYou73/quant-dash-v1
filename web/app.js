@@ -1755,6 +1755,9 @@ async function _renderPortfolio() {
   // Advisor card — independent fetch so it doesn't block holdings.
   _renderAdvisor().catch(() => { /* status updates inline */ });
 
+  // Pairs Trading card — wires inputs once, pre-fills from holdings.
+  _wirePortfolioPairs(positions);
+
   // Auto-hydrate any positions that are missing prices (rows showing "\u2014").
   // Only triggers once per render cycle; the refresh endpoint will retry
   // foreign tickers via .TO/.V fallback. Re-renders when done.
@@ -1950,6 +1953,119 @@ function _wireAdvChat() {
       _renderAdvEmpty();
     });
   }
+}
+
+// ---------- Pairs Trading (Portfolio page) ------------------------------
+// Lightweight wrapper around /api/pairs. Pre-fills the two ticker inputs
+// from the user's largest holdings on first wire (or KO/PEP as a sane
+// default), then re-uses the same Chart.js instance via destroyChart()
+// across runs so we don't leak canvas contexts.
+
+function _wirePortfolioPairs(positions) {
+  const card = document.getElementById("pf-pairs-card");
+  if (!card) return;
+  const aEl  = document.getElementById("pf-pairs-a");
+  const bEl  = document.getElementById("pf-pairs-b");
+  const lkEl = document.getElementById("pf-pairs-lookback");
+  const goEl = document.getElementById("pf-pairs-go");
+  const stEl = document.getElementById("pf-pairs-stats");
+  const sgEl = document.getElementById("pf-pairs-signal");
+  if (!aEl || !goEl) return;
+
+  // Pre-fill from the two largest holdings (skip if user already typed).
+  if (!aEl.value && positions && positions.length >= 2) {
+    const sorted = [...positions].sort((x, y) => (y.value || 0) - (x.value || 0));
+    aEl.value = sorted[0].ticker;
+    bEl.value = sorted[1].ticker;
+  } else if (!aEl.value) {
+    aEl.value = "KO"; bEl.value = "PEP";
+  }
+
+  if (goEl.dataset.wired) return;
+  goEl.dataset.wired = "1";
+
+  async function run() {
+    const a = (aEl.value || "").trim().toUpperCase();
+    const b = (bEl.value || "").trim().toUpperCase();
+    if (!a || !b) { _setPairsStatus(stEl, "Need two tickers.", "err"); return; }
+    if (a === b)  { _setPairsStatus(stEl, "Pick two different tickers.", "err"); return; }
+
+    const lookback = lkEl.value || "252";
+    goEl.disabled = true;
+    _setPairsStatus(stEl, `Loading ${a} vs ${b}\u2026`);
+    sgEl.textContent = "\u2026"; sgEl.className = "pf-badge pf-badge-b";
+
+    try {
+      const data = await apiGet(`/api/pairs?a=${encodeURIComponent(a)}&b=${encodeURIComponent(b)}&lookback=${lookback}`);
+      const beta = data.hedge_ratio_beta;
+      const z    = data.current_z;
+      const sig  = data.signal || "\u2014";
+      _setPairsStatus(stEl,
+        `\u03b2=${fmtNum(beta, 3)} \u00b7 z\u2099\u2092\u1d65=${fmtNum(z, 2)} \u00b7 ${data.series.length} pts \u00b7 ${sig}`,
+        "ok"
+      );
+      const sigU = (sig || "").toUpperCase();
+      sgEl.textContent = sig;
+      if (sigU.includes("LONG") || sigU.includes("SHORT")) {
+        sgEl.className = "pf-badge pf-badge-g";
+      } else if (sigU === "EXIT" || sigU.includes("CLOSE")) {
+        sgEl.className = "pf-badge pf-badge-o";
+      } else {
+        sgEl.className = "pf-badge pf-badge-b";
+      }
+
+      const labels = data.series.map(p => p.date);
+      const spread = data.series.map(p => p.spread);
+      const zArr   = data.series.map(p => p.z);
+
+      destroyChart("pfpairs");
+      chartRegistry["pfpairs"] = new Chart(document.getElementById("pf-pairs-chart"), {
+        type: "line",
+        data: {
+          labels,
+          datasets: [
+            { label: `${a} \u2212 \u03b2\u00b7${b} (spread)`, data: spread,
+              borderColor: "#00cfff", yAxisID: "y",
+              pointRadius: 0, borderWidth: 1.4, tension: 0.15 },
+            { label: "z-score", data: zArr,
+              borderColor: "#ff6b35", yAxisID: "y1",
+              pointRadius: 0, borderWidth: 1.4, tension: 0.15 },
+          ],
+        },
+        options: {
+          responsive: true, maintainAspectRatio: false, animation: false,
+          interaction: { mode: "index", intersect: false },
+          scales: {
+            x:  { ticks: { maxTicksLimit: 8, color: "#8a8a99" }, grid: { display: false } },
+            y:  { position: "left",  ticks: { color: "#00cfff" },
+                  grid: { color: "rgba(0,207,255,0.06)" },
+                  title: { display: true, text: "Spread", color: "#00cfff", font: { size: 10 } } },
+            y1: { position: "right", ticks: { color: "#ff6b35" },
+                  grid: { drawOnChartArea: false },
+                  title: { display: true, text: "Z", color: "#ff6b35", font: { size: 10 } } },
+          },
+          plugins: { legend: { labels: { boxWidth: 10, color: "#b8b8c5", font: { size: 10 } } } },
+        },
+      });
+    } catch (e) {
+      _setPairsStatus(stEl, "Error: " + (e.message || "request failed"), "err");
+      sgEl.textContent = "\u2014"; sgEl.className = "pf-badge pf-badge-o";
+    } finally {
+      goEl.disabled = false;
+    }
+  }
+
+  goEl.addEventListener("click", run);
+  [aEl, bEl].forEach(el => el.addEventListener("keydown", (e) => { if (e.key === "Enter") run(); }));
+
+  // Auto-run on first wire so the card isn't empty.
+  run();
+}
+
+function _setPairsStatus(el, text, kind) {
+  if (!el) return;
+  el.textContent = text || "";
+  el.className = "pf-pairs-stats" + (kind ? " " + kind : "");
 }
 
 async function _renderPortfolioPerf() {
