@@ -642,6 +642,10 @@ class MultiplierExplainIn(BaseModel):
     worst_decile_drawdown: Optional[float] = None
     annual_return_est: Optional[float] = None
     annual_vol_est: Optional[float] = None
+    mode: Optional[str] = None
+    raw_annual_return: Optional[float] = None
+    raw_annual_vol: Optional[float] = None
+    warnings: Optional[list[str]] = None
     model: Optional[str] = None
 
 
@@ -649,19 +653,24 @@ _MULT_SYSTEM = """You are Quant, the in-app trading copilot.
 The user just ran a bootstrap Monte Carlo simulation on a single ticker
 to estimate how long it would take to reach a target multiple of capital.
 
+Three simulation modes exist:
+  - 'naive'   : raw bootstrap from the recent window (regime-fitted, dangerous on hot names)
+  - 'shrunk'  : pulls the daily mean toward a ~10%/yr prior so explosive windows get penalized
+  - 'blended' : mixes the recent window with up to 5y of history so one regime can't dominate
+
 In 4-6 short sentences, plain prose, give them:
-  1) Honest read on whether the probability and timeline are realistic
-     for that ticker (e.g. 90% chance of 10x in 5y on a low-vol name is
-     a regime-fitting artifact, not a forecast).
-  2) The risk side: median drawdown the user must stomach to get there,
-     and how that compares to their likely temperament.
-  3) Whether bootstrap is even the right model here \u2014 if recent vol is
-     unusually low/high, call out that the simulation will be biased.
-  4) One concrete next step: position-size guidance ("don't put more than
-     X% of net worth in this"), or "wait for vol to compress / earnings".
+  1) Compare the raw recent regime against the effective input. If raw is
+     >50%/yr, name it as a likely catalyst window (sector cycle, M&A, AI/HBM
+     boom, COVID rebound, etc.) and say bootstrap will mechanically extrapolate
+     it forward unless shrinkage/blending is used.
+  2) Honest read on the resulting probability and timeline given the chosen
+     mode. If still on naive mode with a hot regime, tell them to switch.
+  3) The risk side: median drawdown vs typical retail pain threshold (~25-30%).
+  4) One concrete next step: position-size guidance ("don't put more than X%
+     of net worth in this"), or a regime check to wait for.
 
 Be direct, opinionated, no disclaimers, no markdown headings, no bullets,
-no emoji. Cap at ~140 words."""
+no emoji. Cap at ~160 words."""
 
 
 @router.post("/explain_multiplier")
@@ -692,15 +701,18 @@ def explain_multiplier(body: MultiplierExplainIn, request: Request, response: Re
         f"Ticker: {body.ticker.upper()}\n"
         f"Target: {body.target_multiple:g}x within {body.horizon_days} trading days "
         f"(~{body.horizon_days/252:.1f}y horizon)\n"
+        f"Simulation mode: {body.mode or 'shrunk'}\n"
+        f"Raw recent regime (unfiltered): annual_return={fmt_pct(body.raw_annual_return)}, annual_vol={fmt_pct(body.raw_annual_vol)}\n"
+        f"Effective input to bootstrap: annual_return={fmt_pct(body.annual_return_est)}, annual_vol={fmt_pct(body.annual_vol_est)}\n"
         f"Probability of reaching target: {fmt_pct(body.prob_reached)}\n"
         f"Days-to-target percentiles: p25={fmt_days(body.p25_days)}, "
         f"p50={fmt_days(body.p50_days)}, p75={fmt_days(body.p75_days)}\n"
         f"Median max-drawdown along the way: {fmt_pct(body.median_max_drawdown)}\n"
         f"Worst-decile max-drawdown: {fmt_pct(body.worst_decile_drawdown)}\n"
-        f"Implied annual return (from bootstrap window): {fmt_pct(body.annual_return_est)}\n"
-        f"Implied annual vol: {fmt_pct(body.annual_vol_est)}\n"
-        "\nGive me your read."
     )
+    if body.warnings:
+        user_msg += "System warnings flagged:\n" + "\n".join(f"- {w}" for w in body.warnings) + "\n"
+    user_msg += "\nGive me your read."
 
     try:
         import anthropic

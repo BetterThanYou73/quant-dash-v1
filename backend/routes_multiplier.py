@@ -43,6 +43,71 @@ class MultiplierIn(BaseModel):
     lookback_days: int = Field(504, ge=63, le=2520, description="Trailing window for bootstrap (~2y default)")
     n_paths: int = Field(3000, ge=500, le=10000, description="Monte Carlo paths")
     seed: int | None = Field(None, ge=0, le=2**31 - 1)
+    # Phase 2E.1 - regime discipline. "naive" reproduces old behaviour for
+    # comparison; "shrunk" pulls daily mean toward a market prior so a recent
+    # explosive window doesn't get extrapolated as a forecast; "blended" mixes
+    # the recent window with the full available history so one regime can't
+    # dominate.
+    mode: str = Field("shrunk", pattern="^(naive|shrunk|blended)$")
+    shrink: float = Field(0.7, ge=0.0, le=1.0, description="Shrinkage weight toward prior (0=naive, 1=full)")
+
+
+# Daily-mean prior used by 'shrunk' mode. ~10% annual is a reasonable long-run
+# US large-cap real-return prior; we want recent monster windows pulled toward
+# this, not toward zero (which would over-penalize healthy growth names).
+_PRIOR_DAILY_MEAN = (1.10) ** (1.0 / 252) - 1.0  # ~0.000378
+
+
+def _build_returns(series, body: "MultiplierIn") -> tuple[np.ndarray, list[str]]:
+    """Return the resampling pool plus any human-readable warnings."""
+    warnings: list[str] = []
+    full_rets = series.pct_change().dropna().to_numpy()
+    if full_rets.size < 60:
+        raise HTTPException(status_code=422, detail=f"Trailing window too short ({full_rets.size} days).")
+
+    recent = full_rets[-body.lookback_days:]
+
+    if body.mode == "naive":
+        rets = recent
+
+    elif body.mode == "blended":
+        # Equal-weight mix of recent regime + full history. Implementation: just
+        # concatenate so np.random.choice samples uniformly from the union.
+        # Cap full-history side at ~5y so we don't drown out recent reality.
+        long_tail = full_rets[-1260:]
+        rets = np.concatenate([recent, long_tail])
+
+    else:  # "shrunk"
+        # Re-center daily returns: pull empirical mean toward the prior by
+        # `shrink` weight, leaving the higher moments (vol/skew/kurtosis) intact.
+        # This is the cleanest single-knob fix: a 250%/yr window with shrink=0.7
+        # collapses to ~85%/yr without touching the tail shape.
+        emp_mean = float(recent.mean())
+        target_mean = (1.0 - body.shrink) * emp_mean + body.shrink * _PRIOR_DAILY_MEAN
+        rets = recent - emp_mean + target_mean
+
+    # Sanity warnings on the *empirical* recent regime so the user sees what
+    # they're working with, regardless of mode.
+    emp_annual = (1.0 + float(recent.mean())) ** 252 - 1.0
+    emp_vol = float(recent.std(ddof=1)) * np.sqrt(252)
+    if emp_annual > 0.80:
+        warnings.append(
+            f"Recent regime implies {emp_annual*100:.0f}% annual return - this is almost "
+            "certainly a one-time catalyst window (earnings beat, sector rotation, M&A) "
+            "that the bootstrap will mechanically extrapolate forward. Use 'shrunk' "
+            "or 'blended' mode for a more honest read."
+        )
+    if emp_vol > 0.70:
+        warnings.append(
+            f"Recent annualized vol is {emp_vol*100:.0f}% - extreme. Drawdown estimates "
+            "may still be too generous because bootstrap doesn't model vol clustering."
+        )
+    if body.lookback_days < 252:
+        warnings.append(
+            f"Lookback of {body.lookback_days} days is short - sample is noisy and "
+            "regime-fitted. Prefer >=2y unless you specifically want a fresh-regime read."
+        )
+    return rets, warnings
 
 
 @router.post("/multiplier/simulate")
@@ -61,9 +126,7 @@ def simulate(body: MultiplierIn) -> dict:
     if len(series) < 90:
         raise HTTPException(status_code=422, detail=f"{tk} has only {len(series)} days of history; need \u226590.")
 
-    rets = series.pct_change().dropna().tail(body.lookback_days).to_numpy()
-    if rets.size < 60:
-        raise HTTPException(status_code=422, detail=f"Trailing window too short ({rets.size} days).")
+    rets, warnings = _build_returns(series, body)
 
     # --- Vectorized bootstrap ----------------------------------------
     rng = np.random.default_rng(body.seed)
@@ -131,10 +194,18 @@ def simulate(body: MultiplierIn) -> dict:
     }
 
     # --- Daily-return summary stats (so the user sees what's driving it).
-    daily_mean = float(rets.mean())
-    daily_std = float(rets.std(ddof=1))
-    annual_mean = float((1.0 + daily_mean) ** 252 - 1.0)
-    annual_std = float(daily_std * np.sqrt(252))
+    # We expose BOTH the unmodified empirical regime and the effective pool
+    # actually used by the bootstrap, so the user can see the discount applied.
+    raw_recent = series.pct_change().dropna().tail(body.lookback_days).to_numpy()
+    raw_daily_mean = float(raw_recent.mean())
+    raw_daily_std = float(raw_recent.std(ddof=1))
+    raw_annual_mean = float((1.0 + raw_daily_mean) ** 252 - 1.0)
+    raw_annual_std = float(raw_daily_std * np.sqrt(252))
+
+    eff_daily_mean = float(rets.mean())
+    eff_daily_std = float(rets.std(ddof=1))
+    eff_annual_mean = float((1.0 + eff_daily_mean) ** 252 - 1.0)
+    eff_annual_std = float(eff_daily_std * np.sqrt(252))
 
     return {
         "as_of_utc": cache_ts,
@@ -143,11 +214,18 @@ def simulate(body: MultiplierIn) -> dict:
         "horizon_days": H,
         "lookback_days": int(body.lookback_days),
         "n_paths": N,
+        "mode": body.mode,
+        "shrink": body.shrink if body.mode == "shrunk" else None,
+        "warnings": warnings,
         "regime": {
-            "daily_mean": clean_for_json(daily_mean),
-            "daily_std": clean_for_json(daily_std),
-            "annual_return_est": clean_for_json(annual_mean),
-            "annual_vol_est": clean_for_json(annual_std),
+            # 'raw_*' = unfiltered recent window; what 'naive' mode would have used.
+            "raw_annual_return": clean_for_json(raw_annual_mean),
+            "raw_annual_vol": clean_for_json(raw_annual_std),
+            # Back-compat keys (frontend reads these for the headline chip).
+            "daily_mean": clean_for_json(eff_daily_mean),
+            "daily_std": clean_for_json(eff_daily_std),
+            "annual_return_est": clean_for_json(eff_annual_mean),
+            "annual_vol_est": clean_for_json(eff_annual_std),
             "sample_size": int(rets.size),
         },
         "results": {

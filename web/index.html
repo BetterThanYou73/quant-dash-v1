@@ -5,7 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>QuantDash — Quantitative Dashboard</title>
 <link href="https://fonts.googleapis.com/css2?family=Space+Mono:ital,wght@0,400;0,700;1,400&family=Syne:wght@400;600;700;800&display=swap" rel="stylesheet">
-<link rel="stylesheet" href="styles.css?v=35">
+<link rel="stylesheet" href="styles.css?v=36">
 </head>
 <body>
 
@@ -580,8 +580,18 @@
             <option value="1260">5 years</option>
           </select>
         </label>
+        <label class="pf-mult-field">
+          <span>Realism mode</span>
+          <select id="pf-mult-mode" class="field" title="Bootstrap is regime-fitted - shrink or blend to discount one-time catalyst windows.">
+            <option value="shrunk" selected>Shrunk (recommended)</option>
+            <option value="blended">Blended (recent + 5y)</option>
+            <option value="naive">Naive (raw bootstrap)</option>
+          </select>
+        </label>
         <button id="pf-mult-go" class="pill cta" type="button">Run simulation</button>
       </div>
+
+      <div class="pf-mult-warn" id="pf-mult-warn" hidden></div>
 
       <div class="pf-mult-stats" id="pf-mult-stats" hidden></div>
 
@@ -636,6 +646,6 @@
 
 <!-- Order matters: config first (sets API_BASE), then app reads window.QD_CONFIG -->
 <script src="config.js"></script>
-<script src="app.js?v=35"></script>
+<script src="app.js?v=36"></script>
 </body>
 </html>

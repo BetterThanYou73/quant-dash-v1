@@ -1972,10 +1972,12 @@ async function _runMultiplier() {
   const target = parseFloat(document.getElementById("pf-mult-target").value);
   const horiz  = parseInt(document.getElementById("pf-mult-horizon").value, 10);
   const lookb  = parseInt(document.getElementById("pf-mult-lookback").value, 10);
+  const mode   = (document.getElementById("pf-mult-mode") || {}).value || "shrunk";
   const btn    = document.getElementById("pf-mult-go");
   const stats  = document.getElementById("pf-mult-stats");
   const charts = document.getElementById("pf-mult-charts");
   const aiBox  = document.getElementById("pf-mult-ai");
+  const warn   = document.getElementById("pf-mult-warn");
 
   if (!tk) {
     stats.hidden = false;
@@ -1987,8 +1989,9 @@ async function _runMultiplier() {
   btn.disabled = true;
   btn.textContent = "Running\u2026";
   stats.hidden = false;
-  stats.innerHTML = `<div class="pf-mult-stat" style="grid-column:1/-1;">Sampling 3,000 paths over ${horiz} days from ${tk}'s last ${lookb} days\u2026</div>`;
+  stats.innerHTML = `<div class="pf-mult-stat" style="grid-column:1/-1;">Sampling 3,000 paths over ${horiz} days from ${tk}'s last ${lookb} days (${mode} mode)\u2026</div>`;
   charts.hidden = true;
+  if (warn) { warn.hidden = true; warn.innerHTML = ""; }
   if (aiBox) aiBox.hidden = true;
 
   try {
@@ -1998,8 +2001,10 @@ async function _runMultiplier() {
       horizon_days: horiz,
       lookback_days: lookb,
       n_paths: 3000,
+      mode: mode,
     });
     _MULT_LAST = data;
+    _renderMultiplierWarnings(data);
     _renderMultiplierStats(data);
     _renderMultiplierCharts(data);
   } catch (e) {
@@ -2018,6 +2023,24 @@ function _daysToHuman(n) {
   const yrs = (d / 252);
   if (yrs < 1) return `${d}d (~${(d / 21).toFixed(1)}mo)`;
   return `${d}d (~${yrs.toFixed(1)}y)`;
+}
+
+function _renderMultiplierWarnings(d) {
+  const box = document.getElementById("pf-mult-warn");
+  if (!box) return;
+  const ws = d.warnings || [];
+  if (!ws.length) { box.hidden = true; box.innerHTML = ""; return; }
+  const modeLabel = { shrunk: "Shrunk", blended: "Blended", naive: "Naive" }[d.mode] || d.mode;
+  const raw = d.regime || {};
+  const rawAnn = raw.raw_annual_return != null ? (raw.raw_annual_return * 100).toFixed(0) + "%" : "n/a";
+  const effAnn = raw.annual_return_est != null ? (raw.annual_return_est * 100).toFixed(0) + "%" : "n/a";
+  box.hidden = false;
+  box.innerHTML = `
+    <div style="margin-bottom:6px;"><strong>Regime check (${_esc(modeLabel)} mode):</strong>
+      raw recent regime = <strong>${rawAnn}</strong>/yr,
+      effective input to bootstrap = <strong>${effAnn}</strong>/yr.</div>
+    <ul>${ws.map(w => `<li>${_esc(w)}</li>`).join("")}</ul>
+  `;
 }
 
 function _renderMultiplierStats(d) {
@@ -2169,6 +2192,10 @@ async function _runMultiplierAI() {
       worst_decile_drawdown: _MULT_LAST.drawdown?.p10,
       annual_return_est: _MULT_LAST.regime?.annual_return_est,
       annual_vol_est: _MULT_LAST.regime?.annual_vol_est,
+      mode: _MULT_LAST.mode,
+      raw_annual_return: _MULT_LAST.regime?.raw_annual_return,
+      raw_annual_vol: _MULT_LAST.regime?.raw_annual_vol,
+      warnings: _MULT_LAST.warnings || [],
     });
     aiBox.hidden = false;
     aiBody.textContent = r.answer || "(no response)";
