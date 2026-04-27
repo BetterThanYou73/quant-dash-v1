@@ -453,6 +453,13 @@ _ANALYTICS_TTL = 60.0
 _analytics_cache: dict[str, tuple[float, dict]] = {}
 _analytics_lock = threading.Lock()
 
+# Process-wide negative cache so we don't re-hammer yfinance for a
+# symbol whose metadata genuinely doesn't exist (e.g. a typo or a
+# delisted ticker). Cleared on process restart, which is fine \u2014
+# Heroku cycles dynos at least daily so transient yfinance issues
+# get a retry naturally.
+_meta_lookup_failed: set[str] = set()
+
 # Process-wide memo of the FULL composite-signals table. The computation
 # scans the entire universe (~500 tickers × 500 days) and is identical
 # for all callers as long as the underlying market-data cache hasn't
@@ -591,6 +598,37 @@ def _compute_analytics(positions: list[dict]) -> dict:
     for sym, info in de.read_user_meta().items():
         sector_map.setdefault(sym, info.get("sector") or "Unknown")
         name_map.setdefault(sym, info.get("name") or sym)
+
+    # Best-effort sector backfill for portfolio holdings still showing
+    # Unknown. Older portfolios were added before yfinance metadata was
+    # hydrated, so they sit forever as "Unknown". We try a one-off
+    # lookup here and persist the result; the per-process
+    # `_meta_lookup_failed` set stops us from re-calling yfinance for
+    # symbols that genuinely have no metadata. Wrapped tight so a
+    # network blip never breaks the analytics response.
+    for p in positions:
+        sym = p["ticker"]
+        cur = sector_map.get(sym)
+        if cur and cur != "Unknown":
+            continue
+        if sym in _meta_lookup_failed:
+            continue
+        try:
+            _hydrate_meta_if_missing(sym)
+        except Exception:
+            _meta_lookup_failed.add(sym)
+            continue
+        # Re-read the just-written entry and update the in-call maps.
+        try:
+            entry = (de.read_user_meta() or {}).get(sym, {}) or {}
+            if entry.get("sector"):
+                sector_map[sym] = entry["sector"]
+            if entry.get("name"):
+                name_map[sym] = entry["name"]
+            if not entry.get("sector"):
+                _meta_lookup_failed.add(sym)
+        except Exception:
+            _meta_lookup_failed.add(sym)
 
     rows: list[dict] = []
     missing_prices: list[str] = []

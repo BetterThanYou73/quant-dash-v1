@@ -290,7 +290,9 @@ const Watchlist = {
   save(items) { localStorage.setItem(WATCHLIST_KEY, JSON.stringify(items)); },
   add(symbol) {
     const sym = symbol.trim().toUpperCase();
-    if (!sym || !/^[A-Z.\-]{1,6}$/.test(sym)) return false;
+    // Match the backend's _TICKER_RE: 1-10 chars, starts with a letter,
+    // allows digits, dots and dashes (BRK.B, TLO.TO, RY-B etc.).
+    if (!sym || !/^[A-Z][A-Z0-9.\-]{0,9}$/.test(sym)) return false;
     const items = Watchlist.load();
     if (items.some(x => x.symbol === sym)) return false;
     items.push({ symbol: sym, enabled: true });
@@ -1390,6 +1392,11 @@ const Portfolio = {
     if (!sym || !(shares > 0) || !(avgCost >= 0)) return { ok: false, error: "Need a ticker, positive shares, and non-negative avg cost." };
     try {
       const r = await apiPost("/api/portfolio", { ticker: sym, shares, avg_cost: avgCost });
+      // Mirror to the local watchlist so the dashboard signals view also
+      // tracks anything the user holds. Best-effort \u2014 if the symbol
+      // doesn't pass Watchlist.add()'s regex (e.g. exotic foreign listings)
+      // we just skip it. No-op if already there.
+      try { Watchlist.add(sym); if (typeof renderWatchlist === "function") renderWatchlist(); } catch (_) {}
       return { ok: true, position: r.position };
     } catch (e) {
       return { ok: false, error: e.message };
@@ -1807,6 +1814,37 @@ async function _renderAdvisor() {
   status.textContent = "READY";
   status.className = "pf-badge pf-badge-g";
   _wireAdvChat();
+  _renderAdvEmpty();
+}
+window._renderAdvisor = _renderAdvisor;
+
+// Welcome / suggested-prompt block shown when the chat log is empty.
+// Clickable chips drop a prompt into the textarea so first-time users
+// don't have to invent a question from scratch.
+function _renderAdvEmpty() {
+  const log = document.getElementById("adv-log");
+  if (!log || log.children.length) return;
+  const empty = document.createElement("div");
+  empty.className = "adv-empty";
+  empty.innerHTML =
+    `<div class="adv-empty-title">Hi 👋 — I'm your portfolio advisor.</div>` +
+    `<div>Ask anything in plain English. I can see your current holdings, ` +
+    `their factor scores (momentum, beta, composite-Z), sector mix, and Buy/Sell signals. ` +
+    `Type a question below or pick one to start:</div>` +
+    `<div class="adv-suggest-row">` +
+    `<button type="button" class="adv-suggest" data-q="What's my biggest risk right now?">What's my biggest risk?</button>` +
+    `<button type="button" class="adv-suggest" data-q="Which positions look weakest based on the factor signals?">Weakest positions?</button>` +
+    `<button type="button" class="adv-suggest" data-q="Am I overconcentrated in any sector? Suggest a rebalance.">Sector rebalance ideas</button>` +
+    `<button type="button" class="adv-suggest" data-q="Summarize my portfolio in one paragraph.">Quick summary</button>` +
+    `</div>`;
+  log.appendChild(empty);
+  empty.querySelectorAll(".adv-suggest").forEach(b => {
+    b.addEventListener("click", () => {
+      const inp = document.getElementById("adv-input");
+      inp.value = b.dataset.q;
+      inp.focus();
+    });
+  });
 }
 
 function _wireAdvChat() {
@@ -1818,6 +1856,9 @@ function _wireAdvChat() {
   send.dataset.wired = "1";
 
   function appendMsg(role, text) {
+    // First user/bot message after the welcome block clears the welcome.
+    const empty = log.querySelector(".adv-empty");
+    if (empty) empty.remove();
     const div = document.createElement("div");
     div.className = "adv-msg adv-msg-" + role;
     div.innerHTML = `<div class="adv-role">${role === "user" ? "You" : "Advisor"}</div>` +
@@ -2422,8 +2463,11 @@ const Auth = (() => {
       try {
         await apiPut("/api/advisor/key", { api_key: v });
         inputEl.value = "";
-        flash("Key saved and verified.", "ok");
+        flash("Key saved and verified. The Advisor is now unlocked on the Portfolio page.", "ok");
         await refresh();
+        // If the Portfolio page is mounted, refresh the advisor card so
+        // the gate disappears without needing a tab switch.
+        try { if (window._renderAdvisor) window._renderAdvisor(); } catch (_) {}
       } catch (e) {
         flash(e.message || "Save failed.", "err");
       } finally {
