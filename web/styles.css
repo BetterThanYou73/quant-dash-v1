@@ -879,6 +879,52 @@ nav {
 .acct-key-msg.ok  { color: var(--accent2, #4ade80); }
 .acct-key-msg.err { color: #ff8092; }
 
+/* Editable rows in Account modal (display name, etc). */
+.acct-edit-row { display: flex; align-items: center; gap: 8px; }
+.acct-edit-row .acct-k { flex: 0 0 110px; }
+.acct-name-input { flex: 1; font-family: 'Space Mono', monospace; font-size: 12px; }
+.acct-name-save { padding: 5px 14px; }
+.acct-toggle { display: flex; align-items: center; gap: 8px; font-size: 12px; color: var(--text2); cursor: pointer; }
+.acct-toggle input { accent-color: var(--accent, #5ad6c7); }
+
+/* Alerts in Account modal */
+.acct-alerts { display: flex; flex-direction: column; gap: 6px; margin-top: 8px; }
+.acct-alert {
+  display: flex; gap: 10px; padding: 8px 10px; border-radius: 4px;
+  background: rgba(255,255,255,0.03); border-left: 3px solid var(--text3);
+}
+.acct-alert-good { border-left-color: #4ade80; }
+.acct-alert-warn { border-left-color: #fbbf24; }
+.acct-alert-bad  { border-left-color: #f87171; }
+.acct-alert-icon { font-size: 14px; flex-shrink: 0; }
+.acct-alert-body { display: flex; flex-direction: column; gap: 2px; }
+.acct-alert-title { font-size: 12px; color: var(--text); font-weight: 600; }
+.acct-alert-msg { font-size: 11px; color: var(--text2); line-height: 1.4; }
+
+/* Dashboard alerts banner */
+.pf-alerts-banner {
+  margin: 12px 0; padding: 10px 14px; border-radius: 6px;
+  background: rgba(255,184,0,0.05); border: 1px solid rgba(255,184,0,0.2);
+}
+.pf-alerts-head { display: flex; align-items: center; justify-content: space-between; margin-bottom: 8px; }
+.pf-alerts-title { font-size: 11px; color: #fbbf24; text-transform: uppercase; letter-spacing: 0.08em; font-weight: 600; }
+.pf-alerts-dismiss {
+  background: transparent; border: none; color: var(--text3); cursor: pointer;
+  font-size: 18px; line-height: 1; padding: 0 6px;
+}
+.pf-alerts-dismiss:hover { color: var(--text); }
+.pf-alerts-list { display: flex; flex-direction: column; gap: 4px; }
+.pf-alert {
+  display: flex; gap: 8px; padding: 6px 8px; border-radius: 4px;
+  background: rgba(255,255,255,0.02); font-size: 12px; line-height: 1.4;
+}
+.pf-alert-icon { flex-shrink: 0; font-size: 11px; }
+.pf-alert-good .pf-alert-icon { color: #4ade80; }
+.pf-alert-warn .pf-alert-icon { color: #fbbf24; }
+.pf-alert-bad  .pf-alert-icon { color: #f87171; }
+.pf-alert-text { color: var(--text2); }
+.pf-alert-text strong { color: var(--text); font-weight: 600; }
+
 /* AI Advisor card (portfolio page) */
 /* IMPORTANT: scope display rules with :not([hidden]) — the bare
    .adv-gate { display: flex } overrides the HTML hidden attribute's

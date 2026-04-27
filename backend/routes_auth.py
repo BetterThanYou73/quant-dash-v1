@@ -196,3 +196,19 @@ def me(request: Request) -> dict[str, Any]:
         # Stale cookie (user was deleted). Treat as anonymous.
         return {"user": None}
     return {"user": {"id": user["id"], "email": user["email"], "display_name": user.get("display_name")}}
+
+
+class ProfilePatch(BaseModel):
+    display_name: Optional[str] = Field(default=None, max_length=80)
+
+
+@router.patch("/me")
+def patch_me(body: ProfilePatch, request: Request) -> dict[str, Any]:
+    """Update profile fields (currently just display_name). Auth required."""
+    uid = get_current_user_id(request)
+    if uid is None:
+        raise HTTPException(status_code=401, detail="not signed in")
+    user = udb.update_display_name(uid, body.display_name)
+    if not user:
+        raise HTTPException(status_code=404, detail="user not found")
+    return {"user": {"id": user["id"], "email": user["email"], "display_name": user.get("display_name")}}

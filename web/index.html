@@ -5,7 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>QuantDash — Quantitative Dashboard</title>
 <link href="https://fonts.googleapis.com/css2?family=Space+Mono:ital,wght@0,400;0,700;1,400&family=Syne:wght@400;600;700;800&display=swap" rel="stylesheet">
-<link rel="stylesheet" href="styles.css?v=37">
+<link rel="stylesheet" href="styles.css?v=38">
 </head>
 <body>
 
@@ -320,6 +320,9 @@
   <!-- Stat strip — populated by _renderPortfolio() from /api/portfolio/analytics totals.
        Mix of real metrics and "Phase 2c" placeholders styled the same so the layout feels intentional. -->
   <div id="pf-stat-strip" class="stat-strip pf-stat-strip"></div>
+
+  <!-- Live alerts banner — computed from analytics each load. Toggle in Account modal. -->
+  <div id="pf-alerts-banner" class="pf-alerts-banner" hidden></div>
 
   <!-- Equity curve — current basket backtested against historical close prices,
        with SPY rebased to the same starting dollar. Driven by /api/portfolio/history. -->
@@ -646,6 +649,6 @@
 
 <!-- Order matters: config first (sets API_BASE), then app reads window.QD_CONFIG -->
 <script src="config.js"></script>
-<script src="app.js?v=37"></script>
+<script src="app.js?v=38"></script>
 </body>
 </html>

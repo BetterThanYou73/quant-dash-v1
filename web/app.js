@@ -55,6 +55,7 @@ async function apiSend(path, method, body) {
 
 async function apiPost(path, body)   { return apiSend(path, "POST", body || {}); }
 async function apiPut(path, body)    { return apiSend(path, "PUT",  body || {}); }
+async function apiPatch(path, body)  { return apiSend(path, "PATCH", body || {}); }
 async function apiDelete(path)       { return apiSend(path, "DELETE", null); }
 
 // =========================================================================
@@ -1613,6 +1614,115 @@ function _pfRiskGrid(t, positions) {
     </div>`).join("");
 }
 
+// ---- Live alerts -------------------------------------------------------
+// Computed from the cached /api/portfolio/analytics payload. No backend, no
+// cron, no email - alerts are surfaced when the user actually loads the page,
+// which is the right time to act on them anyway.
+
+function _computePortfolioAlerts() {
+  const a = window._PF_ANALYTICS;
+  if (!a) return [];
+  const t = a.totals || {};
+  const positions = a.positions || [];
+  const out = [];
+
+  // Day move alert - portfolio swing > 2% one way.
+  if (t.value && t.day_change != null) {
+    const prev = t.value - t.day_change;
+    const pct = prev > 0 ? (t.day_change / prev) : 0;
+    if (Math.abs(pct) >= 0.02) {
+      out.push({
+        kind: pct >= 0 ? "good" : "warn",
+        icon: pct >= 0 ? "\u25B2" : "\u25BC",
+        title: `Portfolio ${pct >= 0 ? "up" : "down"} ${(Math.abs(pct)*100).toFixed(1)}% today`,
+        msg: `${pct >= 0 ? "+" : "-"}$${Math.abs(Math.round(t.day_change)).toLocaleString()} on $${Math.round(t.value).toLocaleString()} basket.`,
+      });
+    }
+  }
+
+  // Concentration alert - top single position > 30% of book.
+  const sorted = positions.filter(p => p.weight != null).sort((x,y) => (y.weight||0) - (x.weight||0));
+  if (sorted.length && sorted[0].weight >= 0.30) {
+    out.push({
+      kind: "warn",
+      icon: "\u26A0",
+      title: `${sorted[0].ticker} is ${(sorted[0].weight*100).toFixed(0)}% of your portfolio`,
+      msg: "Single-name concentration above 30%. A bad earnings print here moves the whole book.",
+    });
+  }
+
+  // Drawdown alert - any position down >15% from cost.
+  positions.forEach(p => {
+    if (p.unrealized_pl_pct != null && p.unrealized_pl_pct <= -0.15) {
+      out.push({
+        kind: "bad",
+        icon: "\u25BC",
+        title: `${p.ticker} down ${(p.unrealized_pl_pct*100).toFixed(0)}% from cost`,
+        msg: `Unrealized loss of $${Math.abs(Math.round(p.unrealized_pl||0)).toLocaleString()}. Decide: thesis intact, or cut?`,
+      });
+    }
+  });
+
+  // Big winner alert - any position up >50% (consider trimming).
+  positions.forEach(p => {
+    if (p.unrealized_pl_pct != null && p.unrealized_pl_pct >= 0.50) {
+      out.push({
+        kind: "good",
+        icon: "\u25B2",
+        title: `${p.ticker} up ${(p.unrealized_pl_pct*100).toFixed(0)}% from cost`,
+        msg: `Unrealized gain of $${Math.round(p.unrealized_pl||0).toLocaleString()}. Consider trimming back to target weight.`,
+      });
+    }
+  });
+
+  // Risk regime alert - portfolio Sharpe below 0 over last year.
+  if (t.sharpe_ratio != null && t.sharpe_ratio < 0) {
+    out.push({
+      kind: "bad",
+      icon: "\u26A0",
+      title: `Negative Sharpe (${t.sharpe_ratio.toFixed(2)}) on current basket`,
+      msg: "Last 252d risk-adjusted return is below cash. Rotate or rebalance.",
+    });
+  }
+
+  // Drawdown alert - simulated max DD > 25% over last year.
+  if (t.max_drawdown != null && t.max_drawdown <= -0.25) {
+    out.push({
+      kind: "warn",
+      icon: "\u26A0",
+      title: `Basket would have drawn down ${(Math.abs(t.max_drawdown)*100).toFixed(0)}% in the last year`,
+      msg: "If you can't stomach that, the weights are too risky for you.",
+    });
+  }
+
+  return out;
+}
+
+function _renderDashboardAlerts() {
+  const banner = document.getElementById("pf-alerts-banner");
+  if (!banner) return;
+  const show = (localStorage.getItem("qd_alerts_show") || "1") === "1";
+  if (!show) { banner.hidden = true; banner.innerHTML = ""; return; }
+  const alerts = _computePortfolioAlerts();
+  if (!alerts.length) { banner.hidden = true; banner.innerHTML = ""; return; }
+  banner.hidden = false;
+  banner.innerHTML = `
+    <div class="pf-alerts-head">
+      <span class="pf-alerts-title">\uD83D\uDD14 ${alerts.length} alert${alerts.length===1?"":"s"}</span>
+      <button class="pf-alerts-dismiss" id="pf-alerts-dismiss" title="Hide for this session">\u00d7</button>
+    </div>
+    <div class="pf-alerts-list">
+      ${alerts.map(a => `
+        <div class="pf-alert pf-alert-${a.kind}">
+          <span class="pf-alert-icon">${a.icon}</span>
+          <span class="pf-alert-text"><strong>${_esc(a.title)}</strong> \u2014 ${_esc(a.msg)}</span>
+        </div>`).join("")}
+    </div>`;
+  document.getElementById("pf-alerts-dismiss")?.addEventListener("click", () => {
+    banner.hidden = true;
+  });
+}
+
 async function _renderPortfolio() {
   const tableEl     = document.getElementById("pf-table");
   const stripEl     = document.getElementById("pf-stat-strip");
@@ -1638,6 +1748,10 @@ async function _renderPortfolio() {
     tableEl.innerHTML = `<div class="placeholder err">Analytics fetch failed: ${e.message}</div>`;
     return;
   }
+  // Cache for the Account modal's Alerts section + the dashboard banner.
+  window._PF_ANALYTICS = analytics;
+  // Compute and surface alerts derived from this analytics payload.
+  try { _renderDashboardAlerts(); } catch {}
 
   const positions = analytics.positions || [];
   if (metaEl) {
@@ -3423,17 +3537,26 @@ const Auth = (() => {
       <div class="account-modal">
         <div class="acct-section">
           <div class="acct-section-title">Profile</div>
-          <div class="acct-row"><span class="acct-k">Display name</span><span class="acct-v">${name || "\u2014"}</span></div>
-          <div class="acct-row"><span class="acct-k">Email</span><span class="acct-v">${email}</span></div>
+          <div class="acct-row"><span class="acct-k">Email</span><span class="acct-v">${_esc(email)}</span></div>
+          <div class="acct-row acct-edit-row">
+            <span class="acct-k">Display name</span>
+            <input id="acct-name-input" class="field acct-name-input" type="text" maxlength="80" value="${_esc(name)}" placeholder="How we greet you">
+            <button id="acct-name-save" class="pill cta acct-name-save">Save</button>
+          </div>
+          <div id="acct-name-msg" class="acct-key-msg"></div>
         </div>
         <div class="acct-section">
-          <div class="acct-section-title">Notifications <span class="acct-soon">soon</span></div>
-          <div class="acct-row acct-muted"><span>Daily portfolio digest, signal alerts, drawdown warnings.</span></div>
+          <div class="acct-section-title">Alerts</div>
+          <div class="acct-row acct-muted"><span>Computed live from your portfolio every page load. No email \u2014 you'll see them here and on the dashboard.</span></div>
+          <div id="acct-alerts" class="acct-alerts"><div class="acct-muted">Loading\u2026</div></div>
+          <div class="acct-row" style="margin-top:8px;">
+            <label class="acct-toggle"><input type="checkbox" id="acct-alert-show" checked> Show alert banner on dashboard</label>
+          </div>
         </div>
         <div class="acct-section">
           <div class="acct-section-title">API Keys <span class="acct-soon">Anthropic</span></div>
           <div class="acct-row acct-muted"><span>Bring your own Anthropic key to power the AI Advisor. The key is encrypted at rest and never sent back to your browser.</span></div>
-          <div id="acct-key-status" class="acct-row acct-muted"><span>Loading…</span></div>
+          <div id="acct-key-status" class="acct-row acct-muted"><span>Loading\u2026</span></div>
           <div class="acct-key-form">
             <input id="acct-key-input" class="field" type="password" placeholder="sk-ant-..." autocomplete="off" spellcheck="false">
             <button id="acct-key-save" class="pill cta">Save</button>
@@ -3452,7 +3575,63 @@ const Auth = (() => {
       Modal.close();
       await logout();
     });
+    _wireAcctName();
+    _wireAcctAlerts();
     _wireAcctKey();
+  }
+
+  async function _wireAcctName() {
+    const inp = document.getElementById("acct-name-input");
+    const btn = document.getElementById("acct-name-save");
+    const msg = document.getElementById("acct-name-msg");
+    if (!inp || !btn) return;
+    btn.addEventListener("click", async () => {
+      const newName = (inp.value || "").trim();
+      const orig = btn.textContent;
+      btn.disabled = true;
+      btn.textContent = "Saving\u2026";
+      msg.textContent = "";
+      msg.className = "acct-key-msg";
+      try {
+        const r = await apiPatch("/api/auth/me", { display_name: newName || null });
+        _user = r.user;
+        _renderNav();
+        msg.textContent = "Saved.";
+        msg.className = "acct-key-msg ok";
+      } catch (e) {
+        msg.textContent = "Save failed: " + e.message;
+        msg.className = "acct-key-msg err";
+      } finally {
+        btn.disabled = false;
+        btn.textContent = orig;
+      }
+    });
+  }
+
+  function _wireAcctAlerts() {
+    const box = document.getElementById("acct-alerts");
+    const tog = document.getElementById("acct-alert-show");
+    if (!box) return;
+    const alerts = _computePortfolioAlerts();
+    if (!alerts.length) {
+      box.innerHTML = `<div class="acct-muted" style="padding:8px 0;">No alerts \u2014 portfolio is within normal ranges.</div>`;
+    } else {
+      box.innerHTML = alerts.map(a => `
+        <div class="acct-alert acct-alert-${a.kind}">
+          <span class="acct-alert-icon">${a.icon}</span>
+          <div class="acct-alert-body">
+            <div class="acct-alert-title">${_esc(a.title)}</div>
+            <div class="acct-alert-msg">${_esc(a.msg)}</div>
+          </div>
+        </div>`).join("");
+    }
+    if (tog) {
+      tog.checked = (localStorage.getItem("qd_alerts_show") || "1") === "1";
+      tog.addEventListener("change", () => {
+        localStorage.setItem("qd_alerts_show", tog.checked ? "1" : "0");
+        _renderDashboardAlerts();
+      });
+    }
   }
 
   async function _wireAcctKey() {

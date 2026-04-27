@@ -215,6 +215,23 @@ def find_user_by_id(user_id: int) -> Optional[dict]:
         return {"id": int(row[0]), "email": row[1], "display_name": row[2], "created_at": str(row[3])}
 
 
+def update_display_name(user_id: int, name: Optional[str]) -> Optional[dict]:
+    """Set or clear the display_name. Returns the updated user dict, or None."""
+    ensure_schema()
+    clean = (name or "").strip() or None
+    if clean and len(clean) > 80:
+        clean = clean[:80]
+    ph = pdb._placeholder()
+    with pdb._conn() as c:
+        cur = c.cursor()
+        cur.execute(
+            f"UPDATE users SET display_name = {ph} WHERE id = {ph}",
+            (clean, int(user_id)),
+        )
+        c.commit()
+    return find_user_by_id(user_id)
+
+
 # ---- device → user portfolio migration ----------------------------------
 
 def migrate_device_portfolios_to_user(device_id: str, user_id: int) -> int:
