@@ -2157,6 +2157,11 @@ async function _renderPairsOpportunities() {
     bulkBtn.dataset.wired = "1";
     bulkBtn.addEventListener("click", () => _runBulkScan());
   }
+  const holdingsBtn = document.getElementById("pf-popp-holdings-go");
+  if (holdingsBtn && !holdingsBtn.dataset.wired) {
+    holdingsBtn.dataset.wired = "1";
+    holdingsBtn.addEventListener("click", () => _runHoldingsScan());
+  }
 
   await _loadPairsOpportunities();
 }
@@ -2166,28 +2171,33 @@ function _setPoppMode(mode) {
   document.querySelectorAll("#pf-popp-tabs .pf-popp-tab").forEach(b => {
     b.classList.toggle("active", b.dataset.mode === mode);
   });
-  const customRow = document.getElementById("pf-popp-custom");
-  const bulkRow   = document.getElementById("pf-popp-bulk");
-  if (customRow) customRow.hidden = mode !== "custom";
-  if (bulkRow)   bulkRow.hidden   = mode !== "bulk";
+  const customRow   = document.getElementById("pf-popp-custom");
+  const bulkRow     = document.getElementById("pf-popp-bulk");
+  const holdingsRow = document.getElementById("pf-popp-holdings");
+  if (customRow)   customRow.hidden   = mode !== "custom";
+  if (bulkRow)     bulkRow.hidden     = mode !== "bulk";
+  if (holdingsRow) holdingsRow.hidden = mode !== "holdings";
 
   const listEl = document.getElementById("pf-popp-list");
   if (mode === "curated") {
     _loadPairsOpportunities();
   } else if (listEl) {
-    const msg = mode === "bulk"
-      ? "Click \u201cRun bulk scan\u201d to scan ~40 large-caps for active LONG/SHORT setups."
-      : "Enter your own tickers above and click Scan.";
-    listEl.innerHTML = `<div class="pf-popp-empty">${msg}</div>`;
+    const msgs = {
+      bulk: "Click \u201cRun bulk scan\u201d to scan ~40 large-caps for active LONG/SHORT setups.",
+      custom: "Enter your own tickers above and click Scan.",
+      holdings: "Click \u201cScan my portfolio\u201d to find pair setups inside your current holdings.",
+    };
+    listEl.innerHTML = `<div class="pf-popp-empty">${msgs[mode] || ""}</div>`;
     _POPP_LAST_DATA = null;
     document.getElementById("pf-popp-ai").disabled = true;
   }
 }
 
 function _runPoppForCurrentMode() {
-  if (_POPP_MODE === "curated") return _loadPairsOpportunities();
-  if (_POPP_MODE === "bulk")    return _runBulkScan();
-  if (_POPP_MODE === "custom")  return _runCustomScan();
+  if (_POPP_MODE === "curated")  return _loadPairsOpportunities();
+  if (_POPP_MODE === "bulk")     return _runBulkScan();
+  if (_POPP_MODE === "custom")   return _runCustomScan();
+  if (_POPP_MODE === "holdings") return _runHoldingsScan();
 }
 
 async function _loadPairsOpportunities() {
@@ -2228,6 +2238,44 @@ async function _runBulkScan() {
     }
   } catch (e) {
     listEl.innerHTML = `<div class="pf-popp-empty">Scan failed: ${(e.message || "request failed")}</div>`;
+  } finally {
+    if (btn) btn.disabled = false;
+  }
+}
+
+async function _runHoldingsScan() {
+  const listEl = document.getElementById("pf-popp-list");
+  const aiBtn  = document.getElementById("pf-popp-ai");
+  const btn    = document.getElementById("pf-popp-holdings-go");
+  if (!listEl) return;
+  listEl.innerHTML = `<div class="pf-popp-empty">Scanning your holdings\u2026</div>`;
+  if (aiBtn) aiBtn.disabled = true;
+  if (btn) btn.disabled = true;
+
+  try {
+    const data = await apiPost("/api/pairs/scan_holdings", {});
+    _POPP_LAST_DATA = data;
+    const usedNote = (data.holdings_used && data.holdings_used.length)
+      ? `<div class="pf-popp-empty" style="text-align:left;">Scanned: <strong>${data.holdings_used.join(", ")}</strong></div>`
+      : "";
+    if (!data.pairs || !data.pairs.length) {
+      listEl.innerHTML =
+        usedNote +
+        `<div class="pf-popp-empty">No active LONG/SHORT pair setups inside your holdings right now. Try the Large-Cap Universe scan for ideas to add.</div>`;
+    } else {
+      _renderPairsOpportunitiesRows(data, null);
+      if (usedNote) listEl.insertAdjacentHTML("afterbegin", usedNote);
+      if (aiBtn) aiBtn.disabled = false;
+    }
+  } catch (e) {
+    const msg = (e && e.message) || "request failed";
+    if (msg.includes("400") && msg.toLowerCase().includes("at least 2")) {
+      listEl.innerHTML = `<div class="pf-popp-empty">Add at least 2 holdings to your portfolio to use this scan.</div>`;
+    } else if (msg.includes("401")) {
+      listEl.innerHTML = `<div class="pf-popp-empty">Sign in to scan your holdings.</div>`;
+    } else {
+      listEl.innerHTML = `<div class="pf-popp-empty">Scan failed: ${msg}</div>`;
+    }
   } finally {
     if (btn) btn.disabled = false;
   }

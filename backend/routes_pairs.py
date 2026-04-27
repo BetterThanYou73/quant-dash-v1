@@ -14,7 +14,7 @@ from __future__ import annotations
 
 import numpy as np
 import pandas as pd
-from fastapi import APIRouter, HTTPException, Query
+from fastapi import APIRouter, HTTPException, Query, Request
 from pydantic import BaseModel, Field
 from typing import Optional
 
@@ -162,13 +162,20 @@ def get_pair_opportunities(
     # Most-actionable first: largest |z|, then highest correlation.
     rows.sort(key=lambda r: (-abs(r.get("current_z") or 0.0), -(r.get("correlation") or 0.0)))
 
+    # Filter to active LONG/SHORT only \u2014 hide neutral/monitor/exit so the
+    # user sees actionable opportunities, not noise.
+    active = [r for r in rows
+              if ("LONG" in (r.get("signal") or "").upper() or "SHORT" in (r.get("signal") or "").upper())
+              and "EXIT" not in (r.get("signal") or "").upper()]
+
     return {
         "lookback_days": lookback,
         "z_window": z_window,
         "entry_threshold": entry,
         "exit_threshold": exit_,
-        "count": len(rows),
-        "pairs": rows,
+        "count": len(active),
+        "scanned": len(rows),
+        "pairs": active,
     }
 
 
@@ -342,3 +349,42 @@ def scan_pairs(body: BulkScanIn) -> dict:
         "count": len(pairs_out),
         "pairs": pairs_out,
     }
+
+
+@router.post("/pairs/scan_holdings")
+def scan_holdings(request: Request) -> dict:
+    """Run the pair scanner against the signed-in user's portfolio holdings.
+
+    Convenience wrapper: pulls the user's tickers from Postgres, then
+    delegates to scan_pairs() with min_correlation lowered slightly because
+    a single user's holdings are usually small (~5-15 names) and we want
+    to surface anything tradeable. Requires auth.
+    """
+    from backend.routes_auth import get_current_user_id
+    from core import portfolio_db as pdb
+
+    uid = get_current_user_id(request)
+    if uid is None:
+        raise HTTPException(status_code=401, detail="Sign in to scan your holdings.")
+
+    positions = pdb.list_positions("user", str(uid))
+    tickers = sorted({p.get("ticker") for p in positions if p.get("ticker")})
+    if len(tickers) < 2:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Need at least 2 holdings to scan for pairs (you have {len(tickers)}).",
+        )
+
+    body = BulkScanIn(
+        tickers=tickers,
+        lookback=252,
+        z_window=30,
+        entry=2.0,
+        exit_=0.5,
+        min_correlation=0.50,  # looser \u2014 small universe, surface anything tradeable
+        max_results=20,
+    )
+    result = scan_pairs(body)
+    result["mode"] = "holdings"
+    result["holdings_used"] = tickers
+    return result
