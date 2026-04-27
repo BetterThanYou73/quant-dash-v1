@@ -1764,6 +1764,9 @@ async function _renderPortfolio() {
   // Strategy cards — wire one-time clicks; results panel hidden until clicked.
   _wireStrategyCards();
 
+  // Money Multiplier — Monte Carlo card. Wire once on first portfolio render.
+  _wireMultiplier();
+
   // Auto-hydrate any positions that are missing prices (rows showing "\u2014").
   // Only triggers once per render cycle; the refresh endpoint will retry
   // foreign tickers via .TO/.V fallback. Re-renders when done.
@@ -1945,6 +1948,236 @@ function _esc(s) {
   return String(s == null ? "" : s)
     .replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;")
     .replace(/"/g, "&quot;").replace(/'/g, "&#39;");
+}
+
+
+// ---------- Money Multiplier (Phase 2E) -------------------------------
+// Bootstrap Monte Carlo on a single ticker. Backend is /api/multiplier/simulate;
+// pure numpy, ~3,000 paths, sub-second. AI commentary on demand via
+// /api/advisor/explain_multiplier.
+
+let _MULT_LAST = null;
+
+function _wireMultiplier() {
+  const btn = document.getElementById("pf-mult-go");
+  if (!btn || btn.dataset.wired) return;
+  btn.dataset.wired = "1";
+  btn.addEventListener("click", () => _runMultiplier());
+  // Run once on first load with the default NVDA/2x/5y so the card isn't empty.
+  _runMultiplier();
+}
+
+async function _runMultiplier() {
+  const tk     = (document.getElementById("pf-mult-ticker").value || "").trim().toUpperCase();
+  const target = parseFloat(document.getElementById("pf-mult-target").value);
+  const horiz  = parseInt(document.getElementById("pf-mult-horizon").value, 10);
+  const lookb  = parseInt(document.getElementById("pf-mult-lookback").value, 10);
+  const btn    = document.getElementById("pf-mult-go");
+  const stats  = document.getElementById("pf-mult-stats");
+  const charts = document.getElementById("pf-mult-charts");
+  const aiBox  = document.getElementById("pf-mult-ai");
+
+  if (!tk) {
+    stats.hidden = false;
+    stats.innerHTML = `<div class="pf-mult-stat" style="grid-column:1/-1;color:#f87171;">Enter a ticker.</div>`;
+    return;
+  }
+
+  const orig = btn.textContent;
+  btn.disabled = true;
+  btn.textContent = "Running\u2026";
+  stats.hidden = false;
+  stats.innerHTML = `<div class="pf-mult-stat" style="grid-column:1/-1;">Sampling 3,000 paths over ${horiz} days from ${tk}'s last ${lookb} days\u2026</div>`;
+  charts.hidden = true;
+  if (aiBox) aiBox.hidden = true;
+
+  try {
+    const data = await apiPost("/api/multiplier/simulate", {
+      ticker: tk,
+      target_multiple: target,
+      horizon_days: horiz,
+      lookback_days: lookb,
+      n_paths: 3000,
+    });
+    _MULT_LAST = data;
+    _renderMultiplierStats(data);
+    _renderMultiplierCharts(data);
+  } catch (e) {
+    stats.innerHTML = `<div class="pf-mult-stat" style="grid-column:1/-1;color:#f87171;">Simulation failed: ${_esc((e && e.message) || "request failed")}</div>`;
+    charts.hidden = true;
+    _MULT_LAST = null;
+  } finally {
+    btn.disabled = false;
+    btn.textContent = orig;
+  }
+}
+
+function _daysToHuman(n) {
+  if (n === null || n === undefined) return "n/a";
+  const d = Math.round(n);
+  const yrs = (d / 252);
+  if (yrs < 1) return `${d}d (~${(d / 21).toFixed(1)}mo)`;
+  return `${d}d (~${yrs.toFixed(1)}y)`;
+}
+
+function _renderMultiplierStats(d) {
+  const stats = document.getElementById("pf-mult-stats");
+  if (!stats) return;
+  const r = d.results || {};
+  const dd = d.drawdown || {};
+  const reg = d.regime || {};
+  const prob = (r.prob_reached || 0) * 100;
+  const probCls = prob >= 70 ? "pos" : prob >= 35 ? "warn" : "neg";
+
+  // The drawdown the median path suffers en route. p25 = "25% of paths
+  // were AT LEAST this deep underwater"; the median draws ~p50.
+  const ddMed = (dd.p50 || 0) * 100;
+  const ddBad = (dd.p10 || 0) * 100;
+
+  stats.innerHTML = `
+    <div class="pf-mult-stat">
+      <span class="pf-mult-stat-label">P(reach ${d.target_multiple}x)</span>
+      <span class="pf-mult-stat-val ${probCls}">${prob.toFixed(0)}%</span>
+      <span class="pf-mult-stat-sub">within ${d.horizon_days} trading days</span>
+    </div>
+    <div class="pf-mult-stat">
+      <span class="pf-mult-stat-label">Median time</span>
+      <span class="pf-mult-stat-val">${_daysToHuman(r.p50_days)}</span>
+      <span class="pf-mult-stat-sub">50% of paths cross by here</span>
+    </div>
+    <div class="pf-mult-stat">
+      <span class="pf-mult-stat-label">Optimistic (p25)</span>
+      <span class="pf-mult-stat-val pos">${_daysToHuman(r.p25_days)}</span>
+      <span class="pf-mult-stat-sub">fastest 25% of paths</span>
+    </div>
+    <div class="pf-mult-stat">
+      <span class="pf-mult-stat-label">Pessimistic (p75)</span>
+      <span class="pf-mult-stat-val warn">${_daysToHuman(r.p75_days)}</span>
+      <span class="pf-mult-stat-sub">slowest 25% (that reach)</span>
+    </div>
+    <div class="pf-mult-stat">
+      <span class="pf-mult-stat-label">Median max-DD</span>
+      <span class="pf-mult-stat-val warn">${ddMed.toFixed(1)}%</span>
+      <span class="pf-mult-stat-sub">cost of the journey</span>
+    </div>
+    <div class="pf-mult-stat">
+      <span class="pf-mult-stat-label">Worst-decile max-DD</span>
+      <span class="pf-mult-stat-val neg">${ddBad.toFixed(1)}%</span>
+      <span class="pf-mult-stat-sub">~est. annual vol ${(reg.annual_vol_est * 100).toFixed(0)}%</span>
+    </div>
+  `;
+}
+
+function _renderMultiplierCharts(d) {
+  const wrap = document.getElementById("pf-mult-charts");
+  const aiBox = document.getElementById("pf-mult-ai");
+  if (!wrap || !window.Chart) return;
+  wrap.hidden = false;
+
+  // Show "Quant's read" button alongside results (only one button so put it
+  // in the AI body header dynamically). Simpler: add inline button under stats.
+  if (aiBox) {
+    let runBtn = document.getElementById("pf-mult-ai-go");
+    if (!runBtn) {
+      const stats = document.getElementById("pf-mult-stats");
+      const wrapBtn = document.createElement("div");
+      wrapBtn.style.cssText = "grid-column:1/-1;display:flex;justify-content:flex-end;margin-top:4px;";
+      wrapBtn.innerHTML = `<button id="pf-mult-ai-go" class="pill cta" type="button">🧠 Get Quant's read</button>`;
+      stats.appendChild(wrapBtn);
+      document.getElementById("pf-mult-ai-go").addEventListener("click", () => _runMultiplierAI());
+    }
+  }
+
+  // --- Equity-curve fan chart ---------------------------------------
+  const eq = d.equity_curve || {};
+  const fanCanvas = document.getElementById("pf-mult-fan");
+  if (chartRegistry["pfmult_fan"]) chartRegistry["pfmult_fan"].destroy();
+  chartRegistry["pfmult_fan"] = new Chart(fanCanvas, {
+    type: "line",
+    data: {
+      labels: eq.days || [],
+      datasets: [
+        { label: "p90", data: eq.p90, borderColor: "rgba(74,222,128,0.8)", backgroundColor: "rgba(74,222,128,0.10)", fill: "+1", tension: 0.2, pointRadius: 0, borderWidth: 1 },
+        { label: "p75", data: eq.p75, borderColor: "rgba(74,222,128,0.5)", backgroundColor: "rgba(74,222,128,0.10)", fill: "+1", tension: 0.2, pointRadius: 0, borderWidth: 1 },
+        { label: "p50 (median)", data: eq.p50, borderColor: "#5ad6c7", borderWidth: 2, tension: 0.2, pointRadius: 0, fill: false },
+        { label: "p25", data: eq.p25, borderColor: "rgba(248,113,113,0.5)", backgroundColor: "rgba(248,113,113,0.10)", fill: "+1", tension: 0.2, pointRadius: 0, borderWidth: 1 },
+        { label: "p10", data: eq.p10, borderColor: "rgba(248,113,113,0.8)", backgroundColor: "rgba(248,113,113,0.10)", tension: 0.2, pointRadius: 0, borderWidth: 1 },
+      ],
+    },
+    options: {
+      responsive: true, maintainAspectRatio: false, animation: false,
+      plugins: {
+        legend: { labels: { color: "#b8b8c5", font: { size: 10 }, boxWidth: 14 } },
+        tooltip: { mode: "index", intersect: false, callbacks: { label: (ctx) => `${ctx.dataset.label}: ${Number(ctx.parsed.y).toFixed(2)}x` } },
+        annotation: undefined,
+      },
+      scales: {
+        x: { ticks: { color: "#b8b8c5", maxTicksLimit: 8, font: { size: 9 } }, grid: { color: "rgba(255,255,255,0.04)" }, title: { display: true, text: "Trading days forward", color: "#b8b8c5", font: { size: 10 } } },
+        y: { ticks: { color: "#b8b8c5", font: { size: 9 }, callback: (v) => v.toFixed(1) + "x" }, grid: { color: "rgba(255,255,255,0.04)" } },
+      },
+    },
+  });
+
+  // --- Histogram of days-to-target ----------------------------------
+  const h = d.histogram || {};
+  const histCanvas = document.getElementById("pf-mult-hist");
+  if (chartRegistry["pfmult_hist"]) chartRegistry["pfmult_hist"].destroy();
+  chartRegistry["pfmult_hist"] = new Chart(histCanvas, {
+    type: "bar",
+    data: {
+      labels: (h.bin_centers || []).map(x => Math.round(x)),
+      datasets: [{
+        label: `Days to ${d.target_multiple}x`,
+        data: h.counts || [],
+        backgroundColor: "rgba(90,214,199,0.6)",
+        borderColor: "rgba(90,214,199,1)",
+        borderWidth: 1,
+      }],
+    },
+    options: {
+      responsive: true, maintainAspectRatio: false, animation: false,
+      plugins: {
+        legend: { display: false },
+        tooltip: { callbacks: { title: (ctx) => `~${ctx[0].label} days`, label: (ctx) => `${ctx.parsed.y} paths` } },
+      },
+      scales: {
+        x: { ticks: { color: "#b8b8c5", maxTicksLimit: 10, font: { size: 9 } }, grid: { display: false }, title: { display: true, text: "Trading days to target", color: "#b8b8c5", font: { size: 10 } } },
+        y: { ticks: { color: "#b8b8c5", font: { size: 9 } }, grid: { color: "rgba(255,255,255,0.04)" }, title: { display: true, text: "# paths", color: "#b8b8c5", font: { size: 10 } } },
+      },
+    },
+  });
+}
+
+async function _runMultiplierAI() {
+  if (!_MULT_LAST) return;
+  const aiBox = document.getElementById("pf-mult-ai");
+  const aiBody = document.getElementById("pf-mult-ai-body");
+  const btn = document.getElementById("pf-mult-ai-go");
+  if (!aiBox || !aiBody) return;
+  const orig = btn ? btn.textContent : "";
+  if (btn) { btn.disabled = true; btn.textContent = "🧠 Quant is thinking\u2026"; }
+  try {
+    const r = await apiPost("/api/advisor/explain_multiplier", {
+      ticker: _MULT_LAST.ticker,
+      target_multiple: _MULT_LAST.target_multiple,
+      horizon_days: _MULT_LAST.horizon_days,
+      prob_reached: _MULT_LAST.results?.prob_reached,
+      p50_days: _MULT_LAST.results?.p50_days,
+      p25_days: _MULT_LAST.results?.p25_days,
+      p75_days: _MULT_LAST.results?.p75_days,
+      median_max_drawdown: _MULT_LAST.drawdown?.p50,
+      worst_decile_drawdown: _MULT_LAST.drawdown?.p10,
+      annual_return_est: _MULT_LAST.regime?.annual_return_est,
+      annual_vol_est: _MULT_LAST.regime?.annual_vol_est,
+    });
+    aiBox.hidden = false;
+    aiBody.textContent = r.answer || "(no response)";
+  } catch (e) {
+    aiBox.hidden = false;
+    aiBody.textContent = "Quant call failed: " + ((e && e.message) || "request failed");
+  } finally {
+    if (btn) { btn.disabled = false; btn.textContent = orig || "🧠 Get Quant's read"; }
+  }
 }
 
 

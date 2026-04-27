@@ -627,3 +627,101 @@ def explain_strategy(body: StrategyExplainIn, request: Request, response: Respon
     return {"model": model, "answer": answer}
 
 
+# ---- multiplier explainer -----------------------------------------------
+# One Haiku call gives a paragraph-level read on a Monte Carlo result.
+
+class MultiplierExplainIn(BaseModel):
+    ticker: str = Field(..., max_length=10)
+    target_multiple: float
+    horizon_days: int
+    prob_reached: Optional[float] = None
+    p50_days: Optional[float] = None
+    p25_days: Optional[float] = None
+    p75_days: Optional[float] = None
+    median_max_drawdown: Optional[float] = None
+    worst_decile_drawdown: Optional[float] = None
+    annual_return_est: Optional[float] = None
+    annual_vol_est: Optional[float] = None
+    model: Optional[str] = None
+
+
+_MULT_SYSTEM = """You are Quant, the in-app trading copilot.
+The user just ran a bootstrap Monte Carlo simulation on a single ticker
+to estimate how long it would take to reach a target multiple of capital.
+
+In 4-6 short sentences, plain prose, give them:
+  1) Honest read on whether the probability and timeline are realistic
+     for that ticker (e.g. 90% chance of 10x in 5y on a low-vol name is
+     a regime-fitting artifact, not a forecast).
+  2) The risk side: median drawdown the user must stomach to get there,
+     and how that compares to their likely temperament.
+  3) Whether bootstrap is even the right model here \u2014 if recent vol is
+     unusually low/high, call out that the simulation will be biased.
+  4) One concrete next step: position-size guidance ("don't put more than
+     X% of net worth in this"), or "wait for vol to compress / earnings".
+
+Be direct, opinionated, no disclaimers, no markdown headings, no bullets,
+no emoji. Cap at ~140 words."""
+
+
+@router.post("/explain_multiplier")
+def explain_multiplier(body: MultiplierExplainIn, request: Request, response: Response) -> dict:
+    uid = _require_user(request)
+    response.headers["Cache-Control"] = "no-store"
+
+    model = body.model or _DEFAULT_MODEL
+    if model not in _ALLOWED_MODELS:
+        raise HTTPException(status_code=400, detail=f"Unsupported model. Allowed: {sorted(_ALLOWED_MODELS)}")
+
+    _check_rate_limit(uid)
+
+    api_key = secrets_db.get_user_key(uid, _PROVIDER)
+    if not api_key:
+        raise HTTPException(status_code=412, detail="No Anthropic key on file. Add one in Account \u2192 API Keys.")
+
+    def fmt_pct(x):
+        return f"{x*100:.1f}%" if x is not None else "n/a"
+
+    def fmt_days(x):
+        if x is None:
+            return "n/a"
+        yrs = x / 252.0
+        return f"{int(round(x))} days (~{yrs:.1f}y)"
+
+    user_msg = (
+        f"Ticker: {body.ticker.upper()}\n"
+        f"Target: {body.target_multiple:g}x within {body.horizon_days} trading days "
+        f"(~{body.horizon_days/252:.1f}y horizon)\n"
+        f"Probability of reaching target: {fmt_pct(body.prob_reached)}\n"
+        f"Days-to-target percentiles: p25={fmt_days(body.p25_days)}, "
+        f"p50={fmt_days(body.p50_days)}, p75={fmt_days(body.p75_days)}\n"
+        f"Median max-drawdown along the way: {fmt_pct(body.median_max_drawdown)}\n"
+        f"Worst-decile max-drawdown: {fmt_pct(body.worst_decile_drawdown)}\n"
+        f"Implied annual return (from bootstrap window): {fmt_pct(body.annual_return_est)}\n"
+        f"Implied annual vol: {fmt_pct(body.annual_vol_est)}\n"
+        "\nGive me your read."
+    )
+
+    try:
+        import anthropic
+        client = anthropic.Anthropic(api_key=api_key)
+        result = client.messages.create(
+            model=model,
+            max_tokens=400,
+            system=_MULT_SYSTEM,
+            messages=[{"role": "user", "content": user_msg}],
+        )
+    except Exception as exc:
+        msg = str(exc)
+        if "401" in msg or "authentication" in msg.lower():
+            raise HTTPException(status_code=401, detail="Anthropic rejected the stored key.")
+        if "429" in msg or "rate" in msg.lower():
+            raise HTTPException(status_code=429, detail="Anthropic rate limit. Try again shortly.")
+        raise HTTPException(status_code=502, detail="Anthropic call failed.")
+    finally:
+        api_key = None
+
+    answer = "".join(getattr(b, "text", "") or "" for b in (result.content or [])).strip() or "(no response)"
+    return {"model": model, "answer": answer}
+
+

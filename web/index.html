@@ -5,7 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>QuantDash — Quantitative Dashboard</title>
 <link href="https://fonts.googleapis.com/css2?family=Space+Mono:ital,wght@0,400;0,700;1,400&family=Syne:wght@400;600;700;800&display=swap" rel="stylesheet">
-<link rel="stylesheet" href="styles.css?v=34">
+<link rel="stylesheet" href="styles.css?v=35">
 </head>
 <body>
 
@@ -534,18 +534,77 @@
     </div>
   </div>
 
-  <!-- Row 5 — Money multiplier calculator stub (Phase 2e Monte Carlo). -->
-  <div class="pf-card pf-stub">
+  <!-- Row 6 \u2014 Money Multiplier (Phase 2E). Bootstrap Monte Carlo on a single ticker. -->
+  <div class="pf-card" id="pf-mult-card">
     <div class="pf-card-header">
-      <div class="pf-card-title">💸 Money Multiplier — X to 10X Calculator</div>
-      <span class="pf-badge pf-badge-o">PHASE 2E — MONTE CARLO</span>
+      <div class="pf-card-title">💸 Money Multiplier \u2014 X-to-10X Calculator</div>
+      <span class="pf-badge pf-badge-g">LIVE</span>
     </div>
-    <div class="pf-stub-body">
-      <div class="pf-stub-icon">🎯</div>
-      <div class="pf-stub-text">
-        Bootstrap historical daily returns to estimate <em>median / p25 / p75</em>
-        trading days to reach a target multiple of your starting capital. Pure
-        numpy, ~50ms server-side, no LLM tokens. Wired up in Phase 2e.
+    <div class="pf-mult-body">
+      <div class="pf-mult-intro">
+        Bootstrap-resamples the trailing daily returns to estimate the
+        <strong>distribution of trading days</strong> needed to reach a
+        target multiple of your starting capital. ~3,000 paths, &lt;500 ms,
+        no AI tokens spent.
+      </div>
+
+      <div class="pf-mult-controls">
+        <label class="pf-mult-field">
+          <span>Ticker</span>
+          <input id="pf-mult-ticker" class="field" type="text" maxlength="10" placeholder="NVDA" value="NVDA" />
+        </label>
+        <label class="pf-mult-field">
+          <span>Target multiple</span>
+          <select id="pf-mult-target" class="field">
+            <option value="1.5">1.5x</option>
+            <option value="2" selected>2x</option>
+            <option value="3">3x</option>
+            <option value="5">5x</option>
+            <option value="10">10x</option>
+          </select>
+        </label>
+        <label class="pf-mult-field">
+          <span>Horizon</span>
+          <select id="pf-mult-horizon" class="field">
+            <option value="252">1 year</option>
+            <option value="504">2 years</option>
+            <option value="1260" selected>5 years</option>
+            <option value="2520">10 years</option>
+          </select>
+        </label>
+        <label class="pf-mult-field">
+          <span>Lookback regime</span>
+          <select id="pf-mult-lookback" class="field">
+            <option value="252">1 year</option>
+            <option value="504" selected>2 years</option>
+            <option value="1260">5 years</option>
+          </select>
+        </label>
+        <button id="pf-mult-go" class="pill cta" type="button">Run simulation</button>
+      </div>
+
+      <div class="pf-mult-stats" id="pf-mult-stats" hidden></div>
+
+      <div class="pf-mult-charts" id="pf-mult-charts" hidden>
+        <div class="pf-mult-chart-block">
+          <div class="pf-mult-chart-title">Equity-curve fan (10/25/50/75/90 percentiles)</div>
+          <div class="pf-mult-chart-wrap"><canvas id="pf-mult-fan"></canvas></div>
+        </div>
+        <div class="pf-mult-chart-block">
+          <div class="pf-mult-chart-title">Days-to-target distribution</div>
+          <div class="pf-mult-chart-wrap"><canvas id="pf-mult-hist"></canvas></div>
+        </div>
+      </div>
+
+      <div class="pf-mult-ai" id="pf-mult-ai" hidden>
+        <div class="pf-mult-ai-head">🧠 Quant's read</div>
+        <div class="pf-mult-ai-body" id="pf-mult-ai-body"></div>
+      </div>
+
+      <div class="pf-mult-foot">
+        Bootstrap assumes the future return distribution looks like the past
+        <em>lookback</em> window. Tail risk and regime shifts are NOT modeled.
+        Educational only.
       </div>
     </div>
   </div>
@@ -577,6 +636,6 @@
 
 <!-- Order matters: config first (sets API_BASE), then app reads window.QD_CONFIG -->
 <script src="config.js"></script>
-<script src="app.js?v=34"></script>
+<script src="app.js?v=35"></script>
 </body>
 </html>
