@@ -115,8 +115,11 @@ def _hydrate_meta_if_missing(sym: str) -> None:
     try:
         existing_meta = de.read_user_meta() or {}
         entry = existing_meta.get(sym, {}) or {}
-        if entry.get("name") and entry.get("sector"):
-            return  # already complete
+        # Treat the "useless" labels yfinance gives leveraged funds and
+        # bare ETFs as missing so we re-derive a real sector below.
+        cur_sector = entry.get("sector") or ""
+        if entry.get("name") and cur_sector and cur_sector not in _SECTOR_PLACEHOLDERS:
+            return  # already complete & specific
 
         import yfinance as yf
 
@@ -130,12 +133,90 @@ def _hydrate_meta_if_missing(sym: str) -> None:
             except Exception:
                 info = {}
             name = info.get("longName") or info.get("shortName")
-            sector = info.get("sector") or info.get("category")
+            # Order: 1) curated override (most reliable for ETFs / leveraged
+            # funds where yfinance returns useless labels), 2) explicit
+            # sector field (single stocks), 3) last-resort cleaned category.
+            sector = (
+                _FUND_SECTOR_OVERRIDES.get(sym)
+                or info.get("sector")
+                or _clean_fund_category(info.get("category"))
+            )
             if name or sector:
-                de.upsert_user_meta(sym, name=name or sym, sector=sector or "ETF")
+                de.upsert_user_meta(sym, name=name or sym, sector=sector or "Diversified")
                 return
     except Exception:
         return
+
+
+# Sector labels yfinance returns that aren't useful (too generic or just
+# wrong about what the fund actually invests in). Treated as "missing"
+# so the override map / category cleaner gets a chance.
+_SECTOR_PLACEHOLDERS = {"ETF", "Unknown", "Trading--Leveraged Equity", "Trading-Leveraged Equity"}
+
+
+# Curated overrides for popular ETFs / leveraged funds where yfinance's
+# `info.sector` is missing and `info.category` is misleading (e.g. SOXL
+# is "Trading--Leveraged Equity" — technically true, practically useless;
+# the fund is 3x semiconductors). Keep this short and obvious — it's not
+# a registry, just a list of common holdings users actually buy.
+_FUND_SECTOR_OVERRIDES: dict[str, str] = {
+    # Leveraged sector ETFs (Direxion / ProShares)
+    "SOXL": "Technology", "SOXS": "Technology",
+    "TQQQ": "Technology", "SQQQ": "Technology",
+    "FNGU": "Technology", "FNGD": "Technology",
+    "TECL": "Technology", "TECS": "Technology",
+    "LABU": "Healthcare", "LABD": "Healthcare",
+    "FAS":  "Financial Services", "FAZ":  "Financial Services",
+    "ERX":  "Energy", "ERY":  "Energy",
+    "GUSH": "Energy", "DRIP": "Energy",
+    "NUGT": "Materials", "DUST": "Materials",
+    "JNUG": "Materials", "JDST": "Materials",
+    "TNA":  "Diversified Equity", "TZA":  "Diversified Equity",
+    "SPXL": "Diversified Equity", "SPXS": "Diversified Equity",
+    "UPRO": "Diversified Equity", "SPXU": "Diversified Equity",
+    # Sector SPDRs
+    "XLK": "Technology", "XLF": "Financial Services", "XLE": "Energy",
+    "XLV": "Healthcare", "XLY": "Consumer Cyclical",  "XLP": "Consumer Defensive",
+    "XLI": "Industrials","XLB": "Materials",          "XLU": "Utilities",
+    "XLRE":"Real Estate","XLC": "Communication Services",
+    # Materials / commodity ETFs
+    "TLO": "Materials",   # iShares Core Canadian Long Term Bond \u2192 actually Fixed Income, see below
+    "GLD": "Materials", "SLV": "Materials", "IAU": "Materials",
+    "USO": "Energy", "UNG": "Energy",
+    # Bond ETFs
+    "TLT": "Fixed Income", "IEF": "Fixed Income", "BND": "Fixed Income",
+    "AGG": "Fixed Income", "LQD": "Fixed Income", "HYG": "Fixed Income",
+    "VGT": "Technology", "VHT": "Healthcare", "VFH": "Financial Services",
+    # Diversified / all-in-one
+    "XEQT": "Diversified Equity", "VEQT": "Diversified Equity",
+    "VGRO": "Diversified Equity", "XGRO": "Diversified Equity",
+    "VBAL": "Diversified Equity", "XBAL": "Diversified Equity",
+    "SPY":  "Diversified Equity", "IVV":  "Diversified Equity",
+    "VOO":  "Diversified Equity", "VTI":  "Diversified Equity",
+    "QQQ":  "Technology",         "DIA":  "Diversified Equity",
+}
+# TLO above was a placeholder \u2014 the iShares ticker is actually a
+# long-term bond fund. Override:
+_FUND_SECTOR_OVERRIDES["TLO"] = "Fixed Income"
+
+
+def _clean_fund_category(cat: str | None) -> str | None:
+    """Map yfinance fund-category strings to a clean sector label.
+
+    yfinance returns Morningstar-style category strings like
+    'Trading--Leveraged Equity' or 'Technology' for ETFs. We keep the
+    obvious ones, strip the leading 'Trading--' prefix, and bucket the
+    truly unhelpful ones into 'Diversified'.
+    """
+    if not cat:
+        return None
+    c = cat.strip()
+    # Strip the Morningstar leverage prefix \u2014 'Trading--Leveraged Equity'
+    # is a vehicle classification, not a sector. The override map handles
+    # specific tickers; fall through to a softer label.
+    if c.startswith("Trading--") or c.startswith("Trading-"):
+        return "Leveraged ETF"
+    return c
 
 
 def _ensure_ticker_cached(sym: str) -> None:
@@ -235,7 +316,12 @@ def _ensure_ticker_cached(sym: str) -> None:
 
             info = yf.Ticker(used_variant).info or {}
             name = info.get("longName") or info.get("shortName") or sym
-            sector = info.get("sector") or info.get("category") or "ETF"
+            sector = (
+                _FUND_SECTOR_OVERRIDES.get(sym)
+                or info.get("sector")
+                or _clean_fund_category(info.get("category"))
+                or "Diversified"
+            )
             de.upsert_user_meta(sym, name=name, sector=sector)
         except Exception:
             pass
@@ -609,9 +695,17 @@ def _compute_analytics(positions: list[dict]) -> dict:
     for p in positions:
         sym = p["ticker"]
         cur = sector_map.get(sym)
-        if cur and cur != "Unknown":
+        # Re-hydrate when label is missing OR is a known placeholder
+        # (e.g. "ETF", "Trading--Leveraged Equity") so the override map
+        # can replace it with something actually informative.
+        if cur and cur not in _SECTOR_PLACEHOLDERS:
             continue
         if sym in _meta_lookup_failed:
+            # Quick check: if we already have a curated override we can
+            # apply it here without hitting the network.
+            ov = _FUND_SECTOR_OVERRIDES.get(sym)
+            if ov:
+                sector_map[sym] = ov
             continue
         try:
             _hydrate_meta_if_missing(sym)
