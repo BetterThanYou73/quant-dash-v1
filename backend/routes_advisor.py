@@ -537,3 +537,93 @@ def explain_pairs_batch(body: PairsBatchIn, request: Request, response: Response
         notes = {}
 
     return {"model": model, "notes": notes, "raw": raw if not notes else None}
+
+
+# ---- strategy results explainer ----------------------------------------
+# One Haiku call gives a paragraph-level read on a strategy's top picks.
+# Frontend sends the strategy key, thesis, and the top-10 picks (ticker +
+# sector + composite z + signal) so the model has enough to reason about
+# whether the regime supports the strategy and which picks stand out.
+
+class StrategyPickIn(BaseModel):
+    ticker: str = Field(..., max_length=10)
+    sector: Optional[str] = Field(None, max_length=64)
+    composite_z: Optional[float] = None
+    signal: Optional[str] = Field(None, max_length=64)
+
+
+class StrategyExplainIn(BaseModel):
+    strategy: str = Field(..., max_length=32)
+    strategy_name: str = Field(..., max_length=64)
+    thesis: str = Field(..., max_length=400)
+    picks: list[StrategyPickIn] = Field(..., min_length=1, max_length=15)
+    model: Optional[str] = None
+
+
+_STRATEGY_SYSTEM = """You are Quant, the in-app trading copilot.
+The user just ran a strategy screen and wants your read on the results.
+
+In 4-6 short sentences, plain prose, give them:
+  1) Whether the current market regime supports this strategy right now
+     (e.g. momentum works in trending markets, mean-reversion in choppy ones).
+  2) Which 1-3 picks from the list stand out and WHY \u2014 sector tailwinds,
+     recent catalyst, fundamental fit with the strategy thesis.
+  3) Which 1-2 picks look weak even though they passed the screen
+     (e.g. crowded trade, sector rotating against them, single-stock risk).
+  4) One concrete next step: "I'd take 2-3 names spread across sectors",
+     "I'd wait \u2014 the regime is wrong", or "Pair the longs with shorts on X".
+
+Be direct, opinionated, no disclaimers, no markdown headings, no bullets,
+no emoji. If you don't know recent news for a name, say so. Cap at ~150 words."""
+
+
+@router.post("/explain_strategy")
+def explain_strategy(body: StrategyExplainIn, request: Request, response: Response) -> dict:
+    uid = _require_user(request)
+    response.headers["Cache-Control"] = "no-store"
+
+    model = body.model or _DEFAULT_MODEL
+    if model not in _ALLOWED_MODELS:
+        raise HTTPException(status_code=400, detail=f"Unsupported model. Allowed: {sorted(_ALLOWED_MODELS)}")
+
+    _check_rate_limit(uid)
+
+    api_key = secrets_db.get_user_key(uid, _PROVIDER)
+    if not api_key:
+        raise HTTPException(status_code=412, detail="No Anthropic key on file. Add one in Account \u2192 API Keys.")
+
+    lines = [
+        f"Strategy: {body.strategy_name} (key={body.strategy})",
+        f"Thesis: {body.thesis}",
+        "",
+        "Top picks (ranked by the strategy's own metric, not just composite-z):",
+    ]
+    for p in body.picks:
+        cz = f"z={p.composite_z:+.2f}" if p.composite_z is not None else "z=n/a"
+        lines.append(f"  - {p.ticker.upper()} ({p.sector or 'Unknown'}) \u2014 {cz}, signal={p.signal or 'n/a'}")
+    lines.append("\nGive me your read.")
+    user_msg = "\n".join(lines)
+
+    try:
+        import anthropic
+        client = anthropic.Anthropic(api_key=api_key)
+        result = client.messages.create(
+            model=model,
+            max_tokens=500,
+            system=_STRATEGY_SYSTEM,
+            messages=[{"role": "user", "content": user_msg}],
+        )
+    except Exception as exc:
+        msg = str(exc)
+        if "401" in msg or "authentication" in msg.lower():
+            raise HTTPException(status_code=401, detail="Anthropic rejected the stored key. Update it in Account \u2192 API Keys.")
+        if "429" in msg or "rate" in msg.lower():
+            raise HTTPException(status_code=429, detail="Anthropic rate limit on your account. Try again shortly.")
+        raise HTTPException(status_code=502, detail="Anthropic call failed. Try again in a moment.")
+    finally:
+        api_key = None
+
+    answer = "".join(getattr(b, "text", "") or "" for b in (result.content or [])).strip() or "(no response)"
+    return {"model": model, "answer": answer}
+
+

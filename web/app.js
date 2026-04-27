@@ -1761,6 +1761,9 @@ async function _renderPortfolio() {
   // Pairs Opportunities — curated pre-screen, AI commentary on demand.
   _renderPairsOpportunities();
 
+  // Strategy cards — wire one-time clicks; results panel hidden until clicked.
+  _wireStrategyCards();
+
   // Auto-hydrate any positions that are missing prices (rows showing "\u2014").
   // Only triggers once per render cycle; the refresh endpoint will retry
   // foreign tickers via .TO/.V fallback. Re-renders when done.
@@ -1776,6 +1779,174 @@ async function _renderPortfolio() {
 // Active period for the equity curve. Persisted in-module so re-renders
 // (after add/sell) keep the user's selection.
 let _PF_PERF_PERIOD = "1y";
+
+// ---------- Investment Strategies --------------------------------------
+// Six clickable strategy cards each open a screener panel below them.
+// Backend: GET /api/strategies/screen?strategy=X. Pure read; uses cached
+// market data so calls are <100ms. AI commentary on demand via
+// /api/advisor/explain_strategy (optional, costs 1 Haiku call).
+
+let _STRAT_LAST_DATA = null;
+let _STRAT_LAST_KEY  = null;
+
+function _wireStrategyCards() {
+  const grid = document.getElementById("pf-strat-grid");
+  if (!grid || grid.dataset.wired) return;
+  grid.dataset.wired = "1";
+  grid.querySelectorAll(".pf-strat-card").forEach(btn => {
+    btn.addEventListener("click", () => _runStrategy(btn.dataset.strat));
+  });
+  const closeBtn = document.getElementById("pf-strat-close");
+  if (closeBtn) closeBtn.addEventListener("click", () => {
+    document.getElementById("pf-strat-card").hidden = true;
+    document.querySelectorAll(".pf-strat-card.active").forEach(b => b.classList.remove("active"));
+    _STRAT_LAST_DATA = null;
+    _STRAT_LAST_KEY = null;
+  });
+  const aiBtn = document.getElementById("pf-strat-ai");
+  if (aiBtn) aiBtn.addEventListener("click", () => _runStrategyAI());
+}
+
+async function _runStrategy(key) {
+  if (!key) return;
+  const card  = document.getElementById("pf-strat-card");
+  const title = document.getElementById("pf-strat-title");
+  const count = document.getElementById("pf-strat-count");
+  const thes  = document.getElementById("pf-strat-thesis");
+  const list  = document.getElementById("pf-strat-list");
+  const aiBtn = document.getElementById("pf-strat-ai");
+  const aiBox = document.getElementById("pf-strat-ai-box");
+  if (!card) return;
+
+  // Highlight active card.
+  document.querySelectorAll(".pf-strat-card").forEach(b => {
+    b.classList.toggle("active", b.dataset.strat === key);
+  });
+
+  card.hidden = false;
+  if (aiBox) aiBox.hidden = true;
+  if (aiBtn) { aiBtn.disabled = true; aiBtn.textContent = "🧠 Quant's read"; }
+  list.innerHTML = `<div class="pf-strat-empty">Scanning universe\u2026</div>`;
+  title.textContent = "Strategy Results";
+  count.textContent = "\u2014";
+  thes.innerHTML = "";
+
+  // Smooth scroll to the results card so it's clear something happened.
+  setTimeout(() => card.scrollIntoView({ behavior: "smooth", block: "start" }), 50);
+
+  try {
+    const data = await apiGet(`/api/strategies/screen?strategy=${encodeURIComponent(key)}&limit=20`);
+    _STRAT_LAST_DATA = data;
+    _STRAT_LAST_KEY  = key;
+    title.textContent = data.name || "Strategy Results";
+    count.textContent = `${data.count || 0} picks`;
+    thes.innerHTML = `<strong>Thesis:</strong> ${_esc(data.thesis || "")} <br><strong>Fits:</strong> ${_esc(data.fits || "")}`;
+    _renderStrategyRows(data);
+    if (aiBtn && data.results && data.results.length) aiBtn.disabled = false;
+  } catch (e) {
+    list.innerHTML = `<div class="pf-strat-empty">Scan failed: ${_esc((e && e.message) || "request failed")}</div>`;
+    _STRAT_LAST_DATA = null;
+  }
+}
+
+function _renderStrategyRows(data) {
+  const list = document.getElementById("pf-strat-list");
+  if (!list) return;
+  const rows = data.results || [];
+  if (!rows.length) {
+    list.innerHTML = `<div class="pf-strat-empty">No names match this strategy right now. Market may be in a different regime \u2014 try another lens.</div>`;
+    return;
+  }
+
+  // Pick a "headline metric" per strategy so the right-most number means
+  // something specific to what the user clicked on, not just composite-Z.
+  const headline = {
+    momentum:         { key: "Momentum_12_1",     label: "12-1 Mom",  pct: true },
+    mean_reversion:   { key: "Return_21d",        label: "21d Return", pct: true },
+    breakout:         { key: "Dist_52w_High",     label: "From 52w Hi", pct: true },
+    value:            { key: "Alpha_Annualized",  label: "Alpha",     pct: true },
+    dividend_capture: { key: "Max_Drawdown_252d", label: "Max DD",    pct: true },
+    quant_signals:    { key: "Composite_Z",       label: "Composite Z", pct: false },
+  }[data.strategy] || { key: "Composite_Z", label: "Composite Z", pct: false };
+
+  const head =
+    `<div class="pf-strat-row head">` +
+    `<div>Ticker</div><div>Name</div><div style="text-align:right;">Price</div>` +
+    `<div style="text-align:right;">${headline.label}</div>` +
+    `<div style="text-align:right;">Z-score</div><div style="text-align:right;">Signal</div>` +
+    `</div>`;
+
+  const fmt = (v, asPct) => {
+    if (v === null || v === undefined || isNaN(v)) return "\u2014";
+    if (asPct) return (v * 100).toFixed(1) + "%";
+    return Number(v).toFixed(2);
+  };
+  const sigClass = (s) => {
+    const u = (s || "").toUpperCase();
+    if (u.includes("STRONG_BUY") || u.includes("STRONG BUY") || u === "BUY") return "buy";
+    if (u.includes("AVOID") || u.includes("HIGH_RISK") || u.includes("HIGH RISK")) return "avoid";
+    return "hold";
+  };
+
+  const body = rows.map(r => {
+    const hv = r[headline.key];
+    const hvCls = (typeof hv === "number" && hv < 0) ? "neg" : (typeof hv === "number" && hv > 0 ? "pos" : "");
+    const z = r.Composite_Z;
+    const zCls = (typeof z === "number" && z > 0) ? "pos" : (typeof z === "number" && z < 0 ? "neg" : "");
+    return `<div class="pf-strat-row" data-tk="${_esc(r.Ticker)}">
+      <div class="pf-strat-tk">${_esc(r.Ticker)}</div>
+      <div class="pf-strat-name-cell" title="${_esc(r.Name || "")}">${_esc(r.Name || "")}</div>
+      <div class="pf-strat-num">${r.Price != null ? "$" + Number(r.Price).toFixed(2) : "\u2014"}</div>
+      <div class="pf-strat-num ${hvCls}">${fmt(hv, headline.pct)}</div>
+      <div class="pf-strat-num ${zCls}">${fmt(z, false)}</div>
+      <div class="pf-strat-sig ${sigClass(r.Signal)}">${_esc(r.Signal || "\u2014")}</div>
+    </div>`;
+  }).join("");
+
+  list.innerHTML = head + body;
+}
+
+async function _runStrategyAI() {
+  if (!_STRAT_LAST_DATA || !_STRAT_LAST_KEY) return;
+  const aiBtn = document.getElementById("pf-strat-ai");
+  const aiBox = document.getElementById("pf-strat-ai-box");
+  const aiBody = document.getElementById("pf-strat-ai-body");
+  if (!aiBtn || !aiBox || !aiBody) return;
+
+  const orig = aiBtn.textContent;
+  aiBtn.disabled = true;
+  aiBtn.textContent = "🧠 Quant is thinking\u2026";
+
+  try {
+    const top = (_STRAT_LAST_DATA.results || []).slice(0, 10).map(r => ({
+      ticker: r.Ticker,
+      sector: r.Sector,
+      composite_z: r.Composite_Z,
+      signal: r.Signal,
+    }));
+    const res = await apiPost("/api/advisor/explain_strategy", {
+      strategy: _STRAT_LAST_KEY,
+      strategy_name: _STRAT_LAST_DATA.name,
+      thesis: _STRAT_LAST_DATA.thesis,
+      picks: top,
+    });
+    aiBox.hidden = false;
+    aiBody.textContent = res.answer || "(no response)";
+  } catch (e) {
+    aiBox.hidden = false;
+    aiBody.textContent = "Quant call failed: " + ((e && e.message) || "request failed");
+  } finally {
+    aiBtn.textContent = orig;
+    aiBtn.disabled = false;
+  }
+}
+
+function _esc(s) {
+  return String(s == null ? "" : s)
+    .replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;").replace(/'/g, "&#39;");
+}
+
 
 // ---------- Advisor ----------------------------------------------------
 // BYOK Anthropic chat. Fetches /api/advisor/key to decide whether to show

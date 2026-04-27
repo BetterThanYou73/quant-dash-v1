@@ -885,7 +885,7 @@ nav {
    default UA stylesheet (display:none), making toggling broken. */
 .adv-controls { display: flex; gap: 8px; align-items: center; }
 .adv-model { font-size: 11px; padding: 4px 8px; height: 26px; }
-.adv-body { padding: 14px 18px 18px; }
+.adv-body { padding: 10px 18px 14px; }
 .adv-gate[hidden], .adv-chat[hidden] { display: none !important; }
 .adv-gate {
   display: flex; flex-direction: column; align-items: center; gap: 12px;
@@ -1000,9 +1000,10 @@ nav {
 .pf-refresh-btn:disabled { opacity: 0.6; cursor: wait; }
 
 /* Row layouts */
-.pf-row { display: grid; gap: 14px; margin-top: 14px; }
+.pf-row { display: grid; gap: 14px; margin-top: 14px; align-items: stretch; }
 .pf-row-2   { grid-template-columns: 1fr 1fr; }
 .pf-row-2-1 { grid-template-columns: 2fr 1fr; }
+.pf-row > .pf-card { display: flex; flex-direction: column; min-width: 0; }
 @media (max-width: 1100px) {
   .pf-row-2, .pf-row-2-1 { grid-template-columns: 1fr; }
 }
@@ -1130,14 +1131,52 @@ nav {
 .pf-risk-fill { height: 100%; border-radius: 3px; transition: width 400ms ease; }
 .pf-risk-desc { font-size: 9px; color: var(--text3); line-height: 1.4; }
 
-/* Strategy cards � visual stubs, not interactive yet. */
+/* Strategy cards \u2014 clickable, each opens a screener. */
 .pf-strat-grid { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 10px; padding: 14px 16px; }
 @media (max-width: 900px) { .pf-strat-grid { grid-template-columns: 1fr 1fr; } }
-.pf-strat-card { background: rgba(255,255,255,0.025); border: 1px solid rgba(255,255,255,0.04); border-radius: 6px; padding: 12px; transition: border-color .2s, transform .15s; cursor: not-allowed; opacity: 0.8; }
-.pf-strat-card:hover { border-color: rgba(0,255,170,0.2); transform: translateY(-1px); }
+.pf-strat-card {
+  background: rgba(255,255,255,0.025); border: 1px solid rgba(255,255,255,0.04);
+  border-radius: 6px; padding: 12px; transition: border-color .2s, transform .15s, background .15s;
+  cursor: pointer; opacity: 1; text-align: left; color: inherit; font-family: inherit;
+  font-size: inherit; display: block;
+}
+.pf-strat-card:hover { border-color: rgba(0,255,170,0.45); transform: translateY(-1px); background: rgba(0,255,170,0.04); }
+.pf-strat-card.active { border-color: rgba(0,255,170,0.7); background: rgba(0,255,170,0.08); }
 .pf-strat-icon { font-size: 20px; margin-bottom: 6px; }
 .pf-strat-name { font-family: 'Syne', sans-serif; font-size: 12px; font-weight: 700; color: var(--text); margin-bottom: 3px; }
 .pf-strat-desc { font-size: 10px; color: var(--text2); line-height: 1.4; }
+
+/* Strategy results card. */
+.pf-strat-controls { display: flex; gap: 8px; align-items: center; }
+.pf-strat-body { padding: 14px 16px; display: flex; flex-direction: column; gap: 12px; }
+.pf-strat-thesis { font-size: 12px; color: var(--text2); line-height: 1.5; padding: 10px 12px; background: rgba(0,255,170,0.04); border-left: 2px solid rgba(0,255,170,0.4); border-radius: 4px; }
+.pf-strat-thesis strong { color: var(--text); }
+.pf-strat-list { display: flex; flex-direction: column; gap: 6px; }
+.pf-strat-empty { padding: 18px; text-align: center; color: var(--text3); font-size: 12px; }
+.pf-strat-row {
+  display: grid; grid-template-columns: 1.2fr 1.5fr 0.8fr 0.7fr 0.7fr 0.9fr;
+  gap: 10px; align-items: center; padding: 10px 12px;
+  background: rgba(255,255,255,0.025); border: 1px solid rgba(255,255,255,0.05);
+  border-radius: 6px; transition: border-color .15s, background .15s;
+}
+.pf-strat-row.head { background: transparent; border-color: transparent; padding: 4px 12px; font-size: 10px; color: var(--text3); text-transform: uppercase; letter-spacing: 0.06em; }
+.pf-strat-row:hover:not(.head) { border-color: rgba(0,255,170,0.35); }
+.pf-strat-tk { font-family: 'Space Mono', monospace; font-weight: 700; font-size: 13px; color: var(--text); }
+.pf-strat-name-cell { font-size: 11px; color: var(--text2); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.pf-strat-num { font-family: 'Space Mono', monospace; font-size: 12px; text-align: right; }
+.pf-strat-num.pos { color: #4ade80; }
+.pf-strat-num.neg { color: #f87171; }
+.pf-strat-sig { font-family: 'Space Mono', monospace; font-size: 10px; text-align: right; padding: 2px 6px; border-radius: 3px; }
+.pf-strat-sig.buy { color: #4ade80; background: rgba(74,222,128,0.1); }
+.pf-strat-sig.hold { color: #fbbf24; background: rgba(251,191,36,0.1); }
+.pf-strat-sig.avoid { color: #f87171; background: rgba(248,113,113,0.1); }
+.pf-strat-ai { padding: 12px 14px; background: rgba(255,184,0,0.05); border: 1px solid rgba(255,184,0,0.2); border-radius: 6px; }
+.pf-strat-ai-head { font-size: 11px; color: #fbbf24; text-transform: uppercase; letter-spacing: 0.08em; margin-bottom: 6px; }
+.pf-strat-ai-body { font-size: 12.5px; line-height: 1.55; color: var(--text); white-space: pre-wrap; }
+@media (max-width: 760px) {
+  .pf-strat-row { grid-template-columns: 1fr 1fr; row-gap: 6px; }
+  .pf-strat-row.head { display: none; }
+}
 
 /* Stub cards � for advisor / pairs / calculator placeholders. */
 .pf-stub { margin-top: 14px; }
@@ -1147,7 +1186,7 @@ nav {
 .pf-stub-text strong { color: var(--accent, #5ad6c7); }
 
 /* Pairs Trading card (Portfolio page). */
-.pf-pairs-body { padding: 14px 16px 16px; display: flex; flex-direction: column; gap: 10px; }
+.pf-pairs-body { padding: 14px 16px 16px; display: flex; flex-direction: column; gap: 10px; flex: 1; }
 .pf-pairs-controls { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
 .pf-pairs-input { width: 78px; text-transform: uppercase; font-family: 'Space Mono', monospace; font-size: 12px; padding: 6px 8px; height: 30px; }
 .pf-pairs-vs { font-size: 10px; color: var(--text3, #8a8a99); letter-spacing: 1px; padding: 0 2px; }
@@ -1155,7 +1194,7 @@ nav {
 .pf-pairs-stats { font-size: 12px; color: var(--text2, #b8b8c5); font-family: 'Space Mono', monospace; min-height: 18px; }
 .pf-pairs-stats .ok  { color: var(--accent2, #4ade80); }
 .pf-pairs-stats .err { color: #ff8092; }
-.pf-pairs-chart-wrap { position: relative; height: 200px; }
+.pf-pairs-chart-wrap { position: relative; height: 240px; flex: 1; min-height: 200px; }
 .pf-pairs-foot { font-size: 10px; color: var(--text3, #8a8a99); line-height: 1.5; }
 
 /* Quant's AI read on a pairs run. Shown after /api/advisor/explain_pairs. */
@@ -1166,7 +1205,7 @@ nav {
 .pf-pairs-ai-body.err   { color: #ff8092; }
 
 /* Pairs Opportunities table (curated pre-screen). */
-.pf-popp-body { padding: 14px 18px 18px; display: flex; flex-direction: column; gap: 12px; }
+.pf-popp-body { padding: 14px 18px 18px; display: flex; flex-direction: column; gap: 12px; flex: 1; }
 .pf-popp-intro { font-size: 11px; color: var(--text3, #8a8a99); line-height: 1.5; }
 .pf-popp-actions { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
 .pf-popp-hint { font-size: 10px; color: var(--text3, #8a8a99); }

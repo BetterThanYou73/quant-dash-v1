@@ -5,7 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>QuantDash — Quantitative Dashboard</title>
 <link href="https://fonts.googleapis.com/css2?family=Space+Mono:ital,wght@0,400;0,700;1,400&family=Syne:wght@400;600;700;800&display=swap" rel="stylesheet">
-<link rel="stylesheet" href="styles.css?v=33">
+<link rel="stylesheet" href="styles.css?v=34">
 </head>
 <body>
 
@@ -419,31 +419,55 @@
     </div>
   </div>
 
-  <!-- Row 4 — Strategies + Pairs trading stubs (Phase 2d / 2c). Visual cards only. -->
-  <div class="pf-row pf-row-2">
-    <div class="pf-card">
-      <div class="pf-card-header">
-        <div class="pf-card-title">Investment Strategies</div>
-        <span class="pf-badge pf-badge-o">PHASE 2D</span>
-      </div>
-      <div class="pf-strat-grid">
-        <div class="pf-strat-card"><div class="pf-strat-icon">📈</div><div class="pf-strat-name">Momentum</div><div class="pf-strat-desc">Ride strong upward trends, exit on reversal.</div></div>
-        <div class="pf-strat-card"><div class="pf-strat-icon">🔄</div><div class="pf-strat-name">Mean Reversion</div><div class="pf-strat-desc">Buy oversold, sell overbought. RSI/Bollinger.</div></div>
-        <div class="pf-strat-card"><div class="pf-strat-icon">⚡</div><div class="pf-strat-name">Breakout</div><div class="pf-strat-desc">Enter on volume-confirmed resistance breaks.</div></div>
-        <div class="pf-strat-card"><div class="pf-strat-icon">🛡️</div><div class="pf-strat-name">Value</div><div class="pf-strat-desc">Buy fundamentally cheap, hold long-term.</div></div>
-        <div class="pf-strat-card"><div class="pf-strat-icon">💸</div><div class="pf-strat-name">Dividend Capture</div><div class="pf-strat-desc">Time entries around ex-dividend dates.</div></div>
-        <div class="pf-strat-card"><div class="pf-strat-icon">🤖</div><div class="pf-strat-name">Quant Signals</div><div class="pf-strat-desc">Composite-Z driven entries (already live).</div></div>
+  <!-- Row 4 \u2014 Investment Strategies, full width. Cards open detail panel below. -->
+  <div class="pf-card">
+    <div class="pf-card-header">
+      <div class="pf-card-title">Investment Strategies</div>
+      <span class="pf-badge pf-badge-g">LIVE</span>
+    </div>
+    <div class="pf-strat-grid" id="pf-strat-grid">
+      <button class="pf-strat-card" type="button" data-strat="momentum"><div class="pf-strat-icon">📈</div><div class="pf-strat-name">Momentum</div><div class="pf-strat-desc">Top names by 12-1 momentum on positive composite.</div></button>
+      <button class="pf-strat-card" type="button" data-strat="mean_reversion"><div class="pf-strat-icon">🔄</div><div class="pf-strat-name">Mean Reversion</div><div class="pf-strat-desc">Quality names that pulled back recently.</div></button>
+      <button class="pf-strat-card" type="button" data-strat="breakout"><div class="pf-strat-icon">⚡</div><div class="pf-strat-name">Breakout</div><div class="pf-strat-desc">Within 5% of 52-week high on heavy volume.</div></button>
+      <button class="pf-strat-card" type="button" data-strat="value"><div class="pf-strat-icon">🛡️</div><div class="pf-strat-name">Value</div><div class="pf-strat-desc">Low-beta names with positive alpha vs SPY.</div></button>
+      <button class="pf-strat-card" type="button" data-strat="dividend_capture"><div class="pf-strat-icon">💸</div><div class="pf-strat-name">Dividend Capture</div><div class="pf-strat-desc">Stable, low-drawdown income proxies.</div></button>
+      <button class="pf-strat-card" type="button" data-strat="quant_signals"><div class="pf-strat-icon">🤖</div><div class="pf-strat-name">Quant Signals</div><div class="pf-strat-desc">Composite Strong Buy / Buy picks.</div></button>
+    </div>
+  </div>
+
+  <!-- Strategy Results \u2014 populated when a strategy card is clicked above. -->
+  <div class="pf-card" id="pf-strat-card" hidden>
+    <div class="pf-card-header">
+      <div class="pf-card-title" id="pf-strat-title">Strategy Results</div>
+      <div class="pf-strat-controls">
+        <span class="pf-badge pf-badge-b" id="pf-strat-count">\u2014</span>
+        <button id="pf-strat-ai" class="pill cta" type="button" disabled title="Get an AI read on these picks (uses ~1 Haiku call).">🧠 Quant's read</button>
+        <button id="pf-strat-close" class="pill" type="button" title="Close">\u2715</button>
       </div>
     </div>
+    <div class="pf-strat-body">
+      <div class="pf-strat-thesis" id="pf-strat-thesis"></div>
+      <div class="pf-strat-list" id="pf-strat-list">
+        <div class="pf-strat-empty">Pick a strategy above.</div>
+      </div>
+      <div class="pf-strat-ai" id="pf-strat-ai-box" hidden>
+        <div class="pf-strat-ai-head">🧠 Quant's read</div>
+        <div class="pf-strat-ai-body" id="pf-strat-ai-body"></div>
+      </div>
+    </div>
+  </div>
 
-    <!-- Pairs Trading Opportunities — pre-screened curated list with corr/z/signal. -->
+  <!-- Row 5 \u2014 Pairs Trading: opportunities (left) + interactive backtester (right). -->
+  <div class="pf-row pf-row-2">
+
+    <!-- Pairs Trading Opportunities \u2014 pre-screened curated list with corr/z/signal. -->
     <div class="pf-card" id="pf-popp-card">
       <div class="pf-card-header">
         <div class="pf-card-title">Pairs Trading Opportunities</div>
         <span class="pf-badge pf-badge-b">COINTEGRATION SCREEN</span>
       </div>
       <div class="pf-popp-body">
-        <div class="pf-popp-intro">Statistical arbitrage — long the undervalued name, short the overvalued one in a correlated pair. Profit when the spread reverts.</div>
+        <div class="pf-popp-intro">Statistical arbitrage \u2014 long the undervalued name, short the overvalued one in a correlated pair. Click any row to load it in the backtester \u2192</div>
 
         <div class="pf-popp-tabs" id="pf-popp-tabs">
           <button class="pf-popp-tab active" data-mode="curated" type="button">Curated</button>
@@ -458,31 +482,32 @@
         </div>
 
         <div class="pf-popp-bulk" id="pf-popp-bulk" hidden>
-          <span class="pf-popp-hint">Scan ~40 large-cap names across sectors (~700 pairs). Wider net than the curated list.</span>
+          <span class="pf-popp-hint">Scan ~40 large-cap names across sectors (~700 pairs).</span>
           <button id="pf-popp-bulk-go" class="pill cta" type="button">Run bulk scan</button>
         </div>
 
         <div class="pf-popp-custom" id="pf-popp-custom" hidden>
           <input id="pf-popp-tickers" class="field" type="text" autocomplete="off"
-                 placeholder="Comma-separated tickers, e.g. NVDA, AMD, INTC, AVGO, AMZN, GOOGL, META" />
+                 placeholder="Comma-separated tickers, e.g. NVDA, AMD, INTC, AVGO" />
           <button id="pf-popp-scan" class="pill cta" type="button">Scan</button>
         </div>
 
         <div class="pf-popp-actions">
-          <button id="pf-popp-refresh" class="pill" type="button">↻ Refresh</button>
-          <button id="pf-popp-ai" class="pill cta" type="button" disabled>🧠 Get Quant's read on all pairs</button>
-          <span class="pf-popp-hint" id="pf-popp-hint">AI commentary uses ~1 cheap Haiku call total.</span>
+          <button id="pf-popp-refresh" class="pill" type="button">\u21bb Refresh</button>
+          <button id="pf-popp-ai" class="pill cta" type="button" disabled>🧠 Get Quant's read</button>
+          <span class="pf-popp-hint" id="pf-popp-hint">AI uses ~1 cheap Haiku call.</span>
         </div>
         <div class="pf-popp-list" id="pf-popp-list">
-          <div class="pf-popp-empty">Loading curated pairs…</div>
+          <div class="pf-popp-empty">Loading curated pairs\u2026</div>
         </div>
       </div>
     </div>
 
+    <!-- Pairs Trading backtester (right side, paired with the screener). -->
     <div class="pf-card" id="pf-pairs-card">
       <div class="pf-card-header">
-        <div class="pf-card-title">Pairs Trading</div>
-        <span class="pf-badge pf-badge-b" id="pf-pairs-signal">—</span>
+        <div class="pf-card-title">Pairs Trading \u2014 Backtester</div>
+        <span class="pf-badge pf-badge-b" id="pf-pairs-signal">\u2014</span>
       </div>
       <div class="pf-pairs-body">
         <div class="pf-pairs-controls">
@@ -496,14 +521,14 @@
           </select>
           <button id="pf-pairs-go" class="pill cta" type="button">Run</button>
         </div>
-        <div class="pf-pairs-stats" id="pf-pairs-stats">Pick two correlated names (e.g. KO/PEP, MSFT/AAPL, V/MA) and run.</div>
+        <div class="pf-pairs-stats" id="pf-pairs-stats">Pick a row from Opportunities \u2190 or type any two correlated names (KO/PEP, V/MA, MSFT/AAPL).</div>
         <div class="pf-pairs-chart-wrap"><canvas id="pf-pairs-chart"></canvas></div>
         <div class="pf-pairs-ai" id="pf-pairs-ai" hidden>
           <div class="pf-pairs-ai-head">🧠 Quant's read</div>
           <div class="pf-pairs-ai-body" id="pf-pairs-ai-body"></div>
         </div>
         <div class="pf-pairs-foot">
-          β = hedge ratio · z &gt; +2 → short A long B · z &lt; −2 → long A short B · |z| &lt; 0.5 → exit
+          \u03b2 = hedge ratio \u00b7 z &gt; +2 \u2192 short A long B \u00b7 z &lt; \u22122 \u2192 long A short B \u00b7 |z| &lt; 0.5 \u2192 exit
         </div>
       </div>
     </div>
@@ -552,6 +577,6 @@
 
 <!-- Order matters: config first (sets API_BASE), then app reads window.QD_CONFIG -->
 <script src="config.js"></script>
-<script src="app.js?v=33"></script>
+<script src="app.js?v=34"></script>
 </body>
 </html>
