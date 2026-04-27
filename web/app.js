@@ -1261,9 +1261,9 @@ async function openScreener() {
       <label>Signal
         <select id="scr-signal" class="field">
           <option value="">Any</option>
-          <option value="STRONG_BUY">Strong Buy</option>
-          <option value="BUY" selected>Buy+</option>
-          <option value="STRONG_BUY,BUY">Buy or Strong Buy</option>
+          <option value="STRONG_BUY">Strong Buy only</option>
+          <option value="STRONG_BUY,BUY" selected>Buy+ (Buy or Strong Buy)</option>
+          <option value="BUY">Buy only</option>
           <option value="HOLD">Hold</option>
           <option value="AVOID">Avoid</option>
         </select>
