@@ -1833,14 +1833,14 @@ function _renderAdvEmpty() {
   const empty = document.createElement("div");
   empty.className = "adv-empty";
   empty.innerHTML =
-    `<div class="adv-empty-title">Hi 👋 — I'm your portfolio advisor.</div>` +
-    `<div>Ask anything in plain English. I can see your current holdings, ` +
-    `their factor scores (momentum, beta, composite-Z), sector mix, and Buy/Sell signals. ` +
-    `Type a question below or pick one to start:</div>` +
+    `<div class="adv-empty-line">` +
+    `<strong>Ask anything about your portfolio.</strong> ` +
+    `I can see your holdings, factor scores, sector mix, and signals. Try:` +
+    `</div>` +
     `<div class="adv-suggest-row">` +
-    `<button type="button" class="adv-suggest" data-q="What's my biggest risk right now?">What's my biggest risk?</button>` +
+    `<button type="button" class="adv-suggest" data-q="What's my biggest risk right now?">Biggest risk?</button>` +
     `<button type="button" class="adv-suggest" data-q="Which positions look weakest based on the factor signals?">Weakest positions?</button>` +
-    `<button type="button" class="adv-suggest" data-q="Am I overconcentrated in any sector? Suggest a rebalance.">Sector rebalance ideas</button>` +
+    `<button type="button" class="adv-suggest" data-q="Am I overconcentrated in any sector? Suggest a rebalance.">Sector rebalance</button>` +
     `<button type="button" class="adv-suggest" data-q="Summarize my portfolio in one paragraph.">Quick summary</button>` +
     `</div>`;
   log.appendChild(empty);
