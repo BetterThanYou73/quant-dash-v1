@@ -448,7 +448,18 @@ def read_user_meta():
     """Return per-symbol metadata for user-added tickers.
 
     Shape: { "POET": {"name": "POET Technologies Inc", "sector": "Technology"}, ... }
+
+    Postgres-backed when DATABASE_URL is set so metadata survives dyno
+    restarts (the file path lives on Heroku's ephemeral filesystem and
+    would lose every entry on each release). Falls back to file storage
+    for local dev.
     """
+    if _cache_backend() == "postgres":
+        rows = _pg_meta_load_all()
+        if rows is not None:
+            return rows
+        # fall through to file if Postgres temporarily unavailable
+
     if not USER_META_PATH.exists():
         return {}
     try:
@@ -460,6 +471,12 @@ def read_user_meta():
 
 def write_user_meta(meta_map):
     """Persist per-symbol user metadata."""
+    if _cache_backend() == "postgres":
+        # Replace-all semantics for simplicity. Callers (upsert_user_meta)
+        # use the row-level path instead so this is rarely hit.
+        for sym, entry in meta_map.items():
+            _pg_meta_upsert(sym, entry.get("name"), entry.get("sector"))
+        return
     CACHE_DIR.mkdir(parents=True, exist_ok=True)
     with open(USER_META_PATH, "w", encoding="utf-8") as f:
         json.dump(meta_map, f, indent=2)
@@ -469,12 +486,83 @@ def upsert_user_meta(symbol, name=None, sector=None):
     """Add/update a single symbol's metadata. No-op if both fields are None."""
     if not name and not sector:
         return
+    sym = symbol.upper()
+    if _cache_backend() == "postgres":
+        _pg_meta_upsert(sym, name, sector)
+        return
     meta = read_user_meta()
-    entry = meta.get(symbol.upper(), {})
+    entry = meta.get(sym, {})
     if name:   entry["name"] = name
     if sector: entry["sector"] = sector
-    meta[symbol.upper()] = entry
+    meta[sym] = entry
     write_user_meta(meta)
+
+
+# --- Postgres-backed user_meta helpers -----------------------------------
+
+def _pg_meta_ensure_schema(conn):
+    with conn.cursor() as cur:
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS user_meta_kv (
+                symbol      TEXT PRIMARY KEY,
+                name        TEXT,
+                sector      TEXT,
+                updated_utc TIMESTAMPTZ NOT NULL DEFAULT NOW()
+            )
+        """)
+    conn.commit()
+
+
+def _pg_meta_load_all():
+    """Return {symbol: {name, sector}} or None on connection failure."""
+    conn = _pg_conn()
+    if conn is None:
+        return None
+    try:
+        _pg_meta_ensure_schema(conn)
+        with conn.cursor() as cur:
+            cur.execute("SELECT symbol, name, sector FROM user_meta_kv")
+            rows = cur.fetchall()
+        out = {}
+        for sym, name, sector in rows:
+            entry = {}
+            if name:   entry["name"] = name
+            if sector: entry["sector"] = sector
+            out[sym] = entry
+        return out
+    except Exception:
+        return None
+    finally:
+        try: conn.close()
+        except Exception: pass
+
+
+def _pg_meta_upsert(symbol, name, sector):
+    """Insert/update a single row. Preserves existing fields when None passed."""
+    conn = _pg_conn()
+    if conn is None:
+        return False
+    try:
+        _pg_meta_ensure_schema(conn)
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                INSERT INTO user_meta_kv (symbol, name, sector, updated_utc)
+                VALUES (%s, %s, %s, NOW())
+                ON CONFLICT (symbol) DO UPDATE SET
+                    name        = COALESCE(EXCLUDED.name, user_meta_kv.name),
+                    sector      = COALESCE(EXCLUDED.sector, user_meta_kv.sector),
+                    updated_utc = NOW()
+                """,
+                (symbol.upper(), name, sector),
+            )
+        conn.commit()
+        return True
+    except Exception:
+        return False
+    finally:
+        try: conn.close()
+        except Exception: pass
 
 
 def merge_tickers_into_cache(new_tickers, period="2y"):

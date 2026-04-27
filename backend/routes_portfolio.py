@@ -102,6 +102,42 @@ def _validate_ticker(t: str) -> str:
     return sym
 
 
+def _hydrate_meta_if_missing(sym: str) -> None:
+    """Look up name + sector from yfinance and persist if not already known.
+
+    Tries the bare symbol first, then .TO / .V suffix variants for foreign
+    listings (matches _ensure_ticker_cached's fallback ladder). Cheap and
+    silent — never raises. Called both when a brand-new ticker is added
+    and when /api/portfolio/refresh hits a ticker whose price column is
+    already in the cache but whose meta row is missing (e.g. positions
+    added before user_meta moved to Postgres).
+    """
+    try:
+        existing_meta = de.read_user_meta() or {}
+        entry = existing_meta.get(sym, {}) or {}
+        if entry.get("name") and entry.get("sector"):
+            return  # already complete
+
+        import yfinance as yf
+
+        candidates = [sym]
+        if "." not in sym:
+            candidates.extend([f"{sym}.TO", f"{sym}.V"])
+
+        for cand in candidates:
+            try:
+                info = yf.Ticker(cand).info or {}
+            except Exception:
+                info = {}
+            name = info.get("longName") or info.get("shortName")
+            sector = info.get("sector") or info.get("category")
+            if name or sector:
+                de.upsert_user_meta(sym, name=name or sym, sector=sector or "ETF")
+                return
+    except Exception:
+        return
+
+
 def _ensure_ticker_cached(sym: str) -> None:
     """Fetch `sym` into the price cache if it isn't already there.
 
@@ -133,6 +169,11 @@ def _ensure_ticker_cached(sym: str) -> None:
                     de.add_user_tickers([sym])
                 except Exception:
                     pass
+                # Even when the price column already exists, the metadata
+                # row (name + sector) might not — earlier deploys lost
+                # user_meta.json on dyno restart. Backfill it here so
+                # /api/portfolio/refresh repairs older positions.
+                _hydrate_meta_if_missing(sym)
                 return
 
         # Try the bare symbol first, then Canadian fallbacks. Stop at
@@ -412,6 +453,47 @@ _ANALYTICS_TTL = 60.0
 _analytics_cache: dict[str, tuple[float, dict]] = {}
 _analytics_lock = threading.Lock()
 
+# Process-wide memo of the FULL composite-signals table. The computation
+# scans the entire universe (~500 tickers × 500 days) and is identical
+# for all callers as long as the underlying market-data cache hasn't
+# changed. Caching by cache_ts means the first portfolio render of a
+# new market-data tick pays the ~3-5s cost; every subsequent render
+# (any user, any portfolio) reuses the same DataFrame in microseconds.
+_signals_memo: dict[str, Any] = {"cache_ts": None, "df": None, "built_at": 0.0}
+_signals_lock = threading.Lock()
+_SIGNALS_MEMO_MAX_AGE = 600.0  # also bound by wallclock so a stuck ts can't pin stale data
+
+
+def _get_universe_signals(universe_close, universe_vols, benchmark_prices, cache_ts):
+    """Return the universe-wide composite-signals DataFrame, cached by cache_ts.
+
+    `universe_close`, `universe_vols`, `benchmark_prices` are only used
+    on a cache miss — pass them lazily if you can.
+    """
+    now = time.time()
+    with _signals_lock:
+        memo_ts = _signals_memo.get("cache_ts")
+        memo_df = _signals_memo.get("df")
+        memo_age = now - _signals_memo.get("built_at", 0.0)
+        if memo_df is not None and memo_ts == cache_ts and memo_age < _SIGNALS_MEMO_MAX_AGE:
+            return memo_df
+
+    # Compute outside the lock so concurrent first-callers don't all
+    # serialize on a 5-second op (worst case: a couple do redundant work
+    # — accepted to keep the lock short).
+    df, _skipped = sig.build_composite_signals(
+        close_prices=universe_close,
+        volumes=universe_vols if universe_vols is not None and not universe_vols.empty else None,
+        benchmark_prices=benchmark_prices,
+        watchlist=None,  # full universe — we filter per portfolio downstream
+    )
+
+    with _signals_lock:
+        _signals_memo["cache_ts"] = cache_ts
+        _signals_memo["df"] = df
+        _signals_memo["built_at"] = now
+    return df
+
 
 def _clean(v):
     if v is None: return None
@@ -488,14 +570,17 @@ def _compute_analytics(positions: list[dict]) -> dict:
     factor_map: dict[str, dict] = {}
     if universe_close.shape[1] >= 30:
         try:
-            signal_df, _skipped = sig.build_composite_signals(
-                close_prices=universe_close,
-                volumes=universe_vols if not universe_vols.empty else None,
-                benchmark_prices=benchmark_prices,
-                watchlist=portfolio_tickers,
+            # Universe-wide signals are cached by cache_ts so this only
+            # actually computes once per market-data refresh tick. Per-
+            # portfolio cost reduces to a dict lookup.
+            signal_df = _get_universe_signals(
+                universe_close, universe_vols, benchmark_prices, cache_ts
             )
-            for row in signal_df.to_dict(orient="records"):
-                factor_map[row["Ticker"]] = row
+            if signal_df is not None and not signal_df.empty:
+                wanted = set(portfolio_tickers)
+                for row in signal_df.to_dict(orient="records"):
+                    if row.get("Ticker") in wanted:
+                        factor_map[row["Ticker"]] = row
         except Exception:
             factor_map = {}  # fail soft \u2014 prices still work without factors
 
