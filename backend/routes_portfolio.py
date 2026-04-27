@@ -726,7 +726,7 @@ def analytics(request: Request, response: Response) -> dict[str, Any]:
     with _analytics_lock:
         hit = _analytics_cache.get(cache_key)
         if hit and (now - hit[0]) < _ANALYTICS_TTL:
-            response.headers["Cache-Control"] = "private, max-age=30"
+            response.headers["Cache-Control"] = "no-store"
             return hit[1]
 
     payload = _compute_analytics(positions)
@@ -740,7 +740,7 @@ def analytics(request: Request, response: Response) -> dict[str, Any]:
             for k, _ in oldest:
                 _analytics_cache.pop(k, None)
 
-    response.headers["Cache-Control"] = "private, max-age=30"
+    response.headers["Cache-Control"] = "no-store"
     return payload
 
 
@@ -785,7 +785,7 @@ def portfolio_history(
     with _history_lock:
         hit = _history_cache.get(cache_key)
         if hit and (now - hit[0]) < _HISTORY_TTL:
-            response.headers["Cache-Control"] = "private, max-age=30"
+            response.headers["Cache-Control"] = "no-store"
             return hit[1]
 
     if not positions:
@@ -796,7 +796,7 @@ def portfolio_history(
             "benchmark": _BENCHMARK_TICKER,
             "diagnostics": {"skipped": [], "n_days": 0},
         }
-        response.headers["Cache-Control"] = "private, max-age=30"
+        response.headers["Cache-Control"] = "no-store"
         return payload
 
     data, _ts = de.get_market_data()
@@ -837,7 +837,7 @@ def portfolio_history(
             "diagnostics": {"skipped": skipped, "n_days": 0,
                             "note": "No held tickers have enough history for this period"},
         }
-        response.headers["Cache-Control"] = "private, max-age=30"
+        response.headers["Cache-Control"] = "no-store"
         return payload
 
     held_close = close_window[list(held.keys())].copy()
@@ -883,5 +883,5 @@ def portfolio_history(
             for k, _ in oldest:
                 _history_cache.pop(k, None)
 
-    response.headers["Cache-Control"] = "private, max-age=30"
+    response.headers["Cache-Control"] = "no-store"
     return payload
