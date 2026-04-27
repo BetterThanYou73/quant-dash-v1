@@ -1561,11 +1561,48 @@ function _pfRiskGrid(t, positions) {
     { name: "Composite Z",       val: fmtNum(cz, 2),                    fill: Math.min(100, Math.max(5, ((cz || 0) + 2) * 25)), color: czTone, desc: czDesc },
     { name: "Concentration",     val: concPct + "%",                    fill: Math.min(100, top2Weight * 100), color: concTone, desc: positions.length >= 2 ? `Top 2 = ${concPct}% of portfolio` : "single position" },
     { name: "Positions",         val: String(positions.length),         fill: Math.min(100, positions.length * 10), color: "var(--accent2, #00cfff)", desc: positions.length < 5 ? "consider diversifying" : "good spread" },
-    { name: "Sharpe Ratio",      val: "—", fill: 0, color: "var(--text3)", desc: "needs return history (Phase 2c)", stub: true },
-    { name: "Max Drawdown",      val: "—", fill: 0, color: "var(--text3)", desc: "needs return history (Phase 2c)", stub: true },
-    { name: "VaR (95%)",         val: "—", fill: 0, color: "var(--text3)", desc: "needs return history (Phase 2c)", stub: true },
-    { name: "Liquidity Score",   val: "—", fill: 0, color: "var(--text3)", desc: "needs avg daily volume (Phase 2c)", stub: true },
   ];
+
+  // Real risk metrics from /api/portfolio/analytics totals (Phase 2c).
+  // Fixed-weight basket simulated over the last ~252 trading days.
+  const sharpe = t.sharpe_ratio;
+  const sharpeTone = sharpe == null ? "var(--text3)" : (sharpe >= 1.0 ? "var(--success)" : (sharpe >= 0.3 ? "#ffcc00" : "var(--danger)"));
+  const sharpeDesc = sharpe == null ? "needs price history"
+    : (sharpe >= 1.5 ? "excellent risk-adjusted return"
+    : sharpe >= 1.0 ? "solid risk-adjusted return"
+    : sharpe >= 0.3 ? "modest risk-adjusted return"
+    : sharpe >= 0   ? "barely beats sitting in cash"
+    : "risk not being rewarded");
+
+  const mdd = t.max_drawdown;  // negative number
+  const mddPct = mdd == null ? null : Math.abs(mdd * 100);
+  const mddTone = mdd == null ? "var(--text3)" : (mddPct >= 30 ? "var(--danger)" : (mddPct >= 15 ? "#ffcc00" : "var(--success)"));
+  const mddDesc = mdd == null ? "needs price history"
+    : `worst peak\u2192trough drop in last ${t.risk_lookback_days || 252}d`;
+
+  const var95 = t.var_95;  // positive fraction
+  const var95Pct = var95 == null ? null : var95 * 100;
+  const var95Dol = t.var_95_dollar;
+  const varTone = var95 == null ? "var(--text3)" : (var95Pct >= 4 ? "var(--danger)" : (var95Pct >= 2 ? "#ffcc00" : "var(--success)"));
+  const varDesc = var95 == null ? "needs price history"
+    : `1-in-20 day loss \u2248 ${var95Dol != null ? "$" + Math.round(var95Dol).toLocaleString() : ""}`;
+
+  const liq = t.liquidity_score;
+  const liqAdv = t.liquidity_min_adv;
+  const liqTone = liq == null ? "var(--text3)" : (liq >= 70 ? "var(--success)" : (liq >= 30 ? "#ffcc00" : "var(--danger)"));
+  const liqDesc = liq == null ? "needs volume data"
+    : `worst leg ADV \u2248 $${liqAdv >= 1e9 ? (liqAdv/1e9).toFixed(1) + "B" : liqAdv >= 1e6 ? (liqAdv/1e6).toFixed(0) + "M" : (liqAdv/1e3).toFixed(0) + "K"}/day`;
+
+  items.push(
+    { name: "Sharpe Ratio",    val: sharpe == null ? "\u2014" : sharpe.toFixed(2),
+      fill: Math.min(100, Math.max(5, ((sharpe || 0) + 1) * 33)), color: sharpeTone, desc: sharpeDesc },
+    { name: "Max Drawdown",    val: mddPct == null ? "\u2014" : "-" + mddPct.toFixed(1) + "%",
+      fill: Math.min(100, mddPct || 5), color: mddTone, desc: mddDesc },
+    { name: "VaR (95%)",       val: var95Pct == null ? "\u2014" : "-" + var95Pct.toFixed(2) + "%",
+      fill: Math.min(100, (var95Pct || 0) * 15), color: varTone, desc: varDesc },
+    { name: "Liquidity Score", val: liq == null ? "\u2014" : Math.round(liq) + "/100",
+      fill: Math.min(100, liq || 5), color: liqTone, desc: liqDesc },
+  );
 
   return items.map(it => `
     <div class="pf-risk-item${it.stub ? " stub" : ""}">
@@ -1623,7 +1660,11 @@ async function _renderPortfolio() {
     _pfStat("Cost Basis",      fmtPrice(t.cost),          "across " + positions.length + " positions",      "neu"),
     _pfStat("Beta vs " + (analytics.benchmark || "SPY"), fmtNum(t.weighted_beta, 2), "value-weighted",       "neu"),
     _pfStat("Composite Z",     fmtNum(t.weighted_composite_z, 2), "factor score",                            (t.weighted_composite_z || 0) >= 0 ? "up" : "dn"),
-    _pfStat("Realized YTD",    "—",                       "trade history (Phase 2c)",                       "stub"),
+    _pfStat("YTD (basket)",
+      t.ytd_return == null ? "\u2014" : (t.ytd_return >= 0 ? "+" : "") + (t.ytd_return * 100).toFixed(2) + "%",
+      t.ytd_dollar == null ? "current weights since Jan 1"
+        : (t.ytd_dollar >= 0 ? "+" : "-") + "$" + Math.abs(Math.round(t.ytd_dollar)).toLocaleString() + " on current basket",
+      t.ytd_return == null ? "neu" : (t.ytd_return >= 0 ? "up" : "dn")),
   ].join("");
 
   if (countEl) countEl.textContent = `${positions.length} HOLDING${positions.length === 1 ? "" : "S"}`;

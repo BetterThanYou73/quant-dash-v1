@@ -825,6 +825,13 @@ def _compute_analytics(positions: list[dict]) -> dict:
     upl_total = total_value - total_cost
     upl_total_pct = (upl_total / total_cost) if total_cost > 0 else None
 
+    # --- Portfolio risk metrics (Sharpe, MaxDD, VaR, Liquidity, YTD) ----
+    # Build a fixed-weight basket return series using current weights and
+    # 252d of historical close prices. This is "what the current portfolio
+    # WOULD have returned over the last year" - not a backtest of trades,
+    # but a faithful proxy of the basket's risk profile right now.
+    risk_metrics = _portfolio_risk_metrics(rows, total_value, close_all, vols_all)
+
     return {
         "totals": {
             "value": _clean(total_value),
@@ -834,6 +841,16 @@ def _compute_analytics(positions: list[dict]) -> dict:
             "day_change": _clean(total_day_change),
             "weighted_beta": _clean(weighted_beta_num / weighted_beta_denom) if weighted_beta_denom > 0 else None,
             "weighted_composite_z": _clean(weighted_z_num / weighted_z_denom) if weighted_z_denom > 0 else None,
+            "sharpe_ratio":      risk_metrics.get("sharpe"),
+            "max_drawdown":      risk_metrics.get("max_drawdown"),
+            "var_95":            risk_metrics.get("var_95"),
+            "var_95_dollar":     risk_metrics.get("var_95_dollar"),
+            "liquidity_score":   risk_metrics.get("liquidity_score"),
+            "liquidity_min_adv": risk_metrics.get("liquidity_min_adv"),
+            "ytd_return":        risk_metrics.get("ytd_return"),
+            "ytd_dollar":        risk_metrics.get("ytd_dollar"),
+            "annualized_vol":    risk_metrics.get("annualized_vol"),
+            "risk_lookback_days": risk_metrics.get("lookback_days"),
         },
         "positions": rows,
         "sector_exposure": sector_exposure,
@@ -844,6 +861,125 @@ def _compute_analytics(positions: list[dict]) -> dict:
             "missing_factors": missing_factors,
         },
     }
+
+
+def _portfolio_risk_metrics(
+    rows: list[dict],
+    total_value: float,
+    close_all: pd.DataFrame,
+    vols_all: pd.DataFrame,
+) -> dict:
+    """Compute Sharpe, MaxDD, 1-day 95% VaR, Liquidity score, YTD return.
+
+    Methodology: build a fixed-weight return series from the current basket
+    over the last ~252 trading days. We use today's portfolio weights, NOT
+    the user's actual trade history (we don't have FIFO trade tracking).
+    This answers 'how risky is the basket I'm holding RIGHT NOW' - which is
+    what a risk panel should answer.
+    """
+    out: dict = {
+        "sharpe": None, "max_drawdown": None, "var_95": None, "var_95_dollar": None,
+        "liquidity_score": None, "liquidity_min_adv": None,
+        "ytd_return": None, "ytd_dollar": None,
+        "annualized_vol": None, "lookback_days": 0,
+    }
+    if not rows or total_value <= 0:
+        return out
+
+    # Build weight vector over tickers with prices.
+    weights: dict[str, float] = {}
+    for r in rows:
+        v = r.get("value")
+        if v is not None and v > 0:
+            weights[r["ticker"]] = v / total_value
+    if not weights:
+        return out
+
+    # Aligned close-price block for the held tickers only.
+    held = [t for t in weights if t in close_all.columns]
+    if not held:
+        return out
+    px = close_all[held].dropna(how="all").tail(260)  # ~1y trading
+    if px.shape[0] < 30:
+        return out
+
+    rets = px.pct_change().dropna(how="all")
+    if rets.empty:
+        return out
+
+    w = np.array([weights[t] for t in held], dtype=float)
+    w = w / w.sum()  # re-normalize over tickers we actually have prices for
+    # Daily portfolio return = sum_i w_i * r_i. Drop days with any NaN
+    # (early IPOs etc) to keep the series clean.
+    rets_clean = rets[held].dropna()
+    if rets_clean.empty or rets_clean.shape[0] < 30:
+        return out
+    port_rets = rets_clean.to_numpy() @ w  # shape (T,)
+
+    out["lookback_days"] = int(port_rets.size)
+
+    # Sharpe (rf=0 - we're not pretending to know the risk-free rate
+    # without a Treasury feed). Annualized.
+    mean = float(port_rets.mean())
+    std = float(port_rets.std(ddof=1))
+    if std > 0:
+        out["sharpe"] = _clean((mean / std) * math.sqrt(252))
+        out["annualized_vol"] = _clean(std * math.sqrt(252))
+
+    # Max drawdown of the simulated equity curve.
+    eq = np.cumprod(1.0 + port_rets)
+    peak = np.maximum.accumulate(eq)
+    dd = eq / peak - 1.0
+    out["max_drawdown"] = _clean(float(dd.min()))
+
+    # 1-day historical 95% VaR. We report it as a positive % loss.
+    var_q = float(np.percentile(port_rets, 5))  # 5th percentile is left tail
+    out["var_95"] = _clean(abs(var_q))
+    out["var_95_dollar"] = _clean(abs(var_q) * total_value)
+
+    # Liquidity: min average dollar volume across positions, scaled.
+    # Score = clip(log10(min_adv / $1M) / 2, 0, 1) * 100. So $1M ADV -> 0,
+    # $100M -> 100. We use the worst position because a basket is only as
+    # liquid as its worst leg when you need to exit fast.
+    advs: list[float] = []
+    for t in held:
+        if t not in vols_all.columns:
+            continue
+        p = close_all[t].tail(63).dropna()
+        v = vols_all[t].tail(63).dropna()
+        if p.empty or v.empty:
+            continue
+        # Align and average dollar volume.
+        joined = pd.concat([p, v], axis=1, join="inner").dropna()
+        if joined.empty:
+            continue
+        adv = float((joined.iloc[:, 0] * joined.iloc[:, 1]).mean())
+        if adv > 0:
+            advs.append(adv)
+    if advs:
+        min_adv = min(advs)
+        score = max(0.0, min(1.0, math.log10(max(min_adv, 1.0) / 1_000_000.0) / 2.0)) * 100.0
+        out["liquidity_min_adv"] = _clean(min_adv)
+        out["liquidity_score"] = _clean(score)
+
+    # YTD return of the *current basket* applied retroactively. Honest
+    # caveat: this is NOT realized P&L - it's "what the basket I hold
+    # today would have done since Jan 1." It's the closest thing to YTD
+    # without trade history.
+    try:
+        first_day_of_year = pd.Timestamp(year=px.index[-1].year, month=1, day=1)
+        ytd_px = px[px.index >= first_day_of_year].dropna(how="all")
+        if ytd_px.shape[0] >= 2:
+            ytd_rets = ytd_px[held].pct_change().dropna()
+            if not ytd_rets.empty:
+                ytd_basket = ytd_rets.to_numpy() @ w
+                ytd_total = float(np.prod(1.0 + ytd_basket) - 1.0)
+                out["ytd_return"] = _clean(ytd_total)
+                out["ytd_dollar"] = _clean(ytd_total * total_value)
+    except Exception:
+        pass
+
+    return out
 
 
 @router.get("/analytics")
